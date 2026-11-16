@@ -207,6 +207,7 @@ reshape_deployments_list_json() {
         and (.versions | type) == "array"
         and (.versions | length) == 1
         and (.versions[0].version_id | type) == "string"
+        and (.versions[0].version_id | length) > 0
         and .versions[0].percentage == 100
     )' <"$input" >/dev/null; then
         echo "reshape_deployments_list_json: the last two deployments in $input must each serve one version at 100%" >&2

@@ -99,13 +99,15 @@ esac
 # generic scrubs, so that a binding value matching a generic pattern (e.g. a
 # token that looks like a UUID) gets the consumer-specific REDACTED placeholder
 # rather than the generic zero placeholder. Wrangler prints a binding as
-# `env.NAME (value)`; older releases quoted the value, `env.NAME ("value")`,
-# and both forms are redacted.
+# `env.NAME (value)`; older releases quoted the value, `env.NAME ("value")`.
+# A value can hold a parenthesis or an escaped quote, so no closing delimiter
+# marks where it ends: everything from the opening parenthesis to the end of
+# the line is replaced, which drops the binding-type column after it too.
 CONSUMER_SCRUBS=""
 for binding in $SCRUB_BINDINGS; do
     CONSUMER_SCRUBS="${CONSUMER_SCRUBS}
-  s/(env\\.${binding}) \\(\"[^\"]*\"\\)/\\1 (\"REDACTED\")/
-  s/(env\\.${binding}) \\([^\")][^)]*\\)/\\1 (REDACTED)/"
+  s/(env\\.${binding}) \\(\".*/\\1 (\"REDACTED\")/
+  s/(env\\.${binding}) \\([^\"].*/\\1 (REDACTED)/"
 done
 
 # Literal ESC byte for ANSI escape code matching. Wrangler emits color codes

@@ -238,7 +238,8 @@ reshape() {
     '[{},{}]' \
     '[{"versions":[]},{"versions":[{"version_id":"a","percentage":100}]}]' \
     '[{"versions":[{"version_id":"a","percentage":50},{"version_id":"b","percentage":50}]},{"versions":[{"version_id":"c","percentage":100}]}]' \
-    '[{"versions":[{"percentage":100}]},{"versions":[{"version_id":"c","percentage":100}]}]'
+    '[{"versions":[{"percentage":100}]},{"versions":[{"version_id":"c","percentage":100}]}]' \
+    '[{"versions":[{"version_id":"a","percentage":100}]},{"versions":[{"version_id":"","percentage":100}]}]'
   do
     printf '%s\n' "$doc" > "$TMP/in.json"
     run reshape
