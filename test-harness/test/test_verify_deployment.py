@@ -46,7 +46,10 @@ case "$url" in
 */deployments) body="$FAKE_CURL_DIR/deployments" ;;
 *) body="$FAKE_CURL_DIR/live_sha" ;;
 esac
-[ -f "$body" ] || exit 7
+if [ ! -f "$body" ]; then
+    echo "curl: (7) Failed to connect" >&2
+    exit 7
+fi
 cat "$body"
 """
 
@@ -232,6 +235,14 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
         )
         self.assertEqual(done.returncode, 1)
         self.assertIn("VERIFY_DEPLOYMENT_SHA_ATTEMPTS must be an integer", done.stderr)
+
+    def test_a_failed_deployments_read_says_why(self) -> None:
+        """A failed read used to exit with curl's status and nothing else, which
+        leaves an operator nothing to go on for an auth or HTTP failure."""
+        done = self.run_verifier()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("Could not read the deployments of test-worker", done.stderr)
+        self.assertIn("curl: (7) Failed to connect", done.stderr)
 
     def test_missing_required_env_is_named(self) -> None:
         for missing in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "SCRIPT_NAME"):

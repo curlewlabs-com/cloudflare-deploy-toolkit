@@ -18,7 +18,7 @@ closed unless it matches the expected commit. Workers without such an endpoint
 The spawned binaries, each for a reason `json`/`urllib` does not cover:
 
   curl  makes the deployments API and optional live-SHA HTTP reads, under policies that differ because the reads do.
-        The deployments API read is `-sf --retry 5 --retry-connrefused`: curl's
+        The deployments API read is `-sSf --retry 5 --retry-connrefused`: curl's
         own exponential backoff over HTTP 408/429/5xx, timeouts, and a refused
         connection, a policy this would otherwise re-implement inside a deploy
         verifier, where getting it subtly wrong turns a good deploy into a red
@@ -147,11 +147,13 @@ def _fetch_deployments(env: Mapping[str, str]) -> str:
         f"/workers/scripts/{env['SCRIPT_NAME']}/deployments"
     )
     # An idempotent read, so a re-issue is safe; a definitive 4xx still fails
-    # fast under -f rather than being retried.
+    # fast under -f rather than being retried. -S keeps curl's own message on
+    # a failure (the HTTP status, or the transport error), which is all an
+    # operator has to go on.
     fetched = subprocess.run(
         [
             "curl",
-            "-sf",
+            "-sSf",
             "--retry",
             "5",
             "--retry-connrefused",
@@ -164,8 +166,12 @@ def _fetch_deployments(env: Mapping[str, str]) -> str:
         check=False,
     )
     if fetched.returncode != 0:
-        sys.stderr.write(fetched.stderr)
-        raise SystemExit(fetched.returncode)
+        detail = fetched.stderr.strip() or f"curl exited {fetched.returncode}"
+        raise VerifyFailure(
+            f"::error::Could not read the deployments of {env['SCRIPT_NAME']} "
+            f"from Cloudflare: {detail}",
+            to_stderr=True,
+        )
     return fetched.stdout
 
 
