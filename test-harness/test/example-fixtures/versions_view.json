@@ -1,0 +1,14 @@
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "number": 2,
+  "annotations": {
+    "workers/message": "deploy-pipeline final (abc1234) commit=abc1234000000000000000000000000000000000 gen=1",
+    "workers/triggered_by": "upload"
+  },
+  "resources": {
+    "script_runtime": {
+      "compatibility_date": "2025-01-01",
+      "usage_model": "standard"
+    }
+  }
+}

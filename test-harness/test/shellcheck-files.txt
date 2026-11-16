@@ -1,0 +1,9 @@
+test-harness/bin/sanitize-wrangler-text.sh
+test-harness/bin/mock-wrangler.sh
+test-harness/bin/check-fixture-purity.sh
+test-harness/lib/test-slots.sh
+test-harness/lib/capture-helpers.sh
+test-harness/test/check.sh
+test-harness/test/example-deploy-wrapper.sh
+test-harness/test/example-hook.sh
+deploy-lib/wrangler-retry.sh

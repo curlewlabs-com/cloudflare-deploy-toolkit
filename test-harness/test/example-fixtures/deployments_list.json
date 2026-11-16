@@ -1,0 +1,30 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-aaaaaaaaaaaa",
+    "source": "example-source",
+    "strategy": "percentage",
+    "author_email": "test@example.com",
+    "annotations": {
+      "workers/message": "fixture",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {"version_id": "99999999-9999-9999-9999-999999999999", "percentage": 100}
+    ],
+    "created_on": "2025-01-01T00:00:00.000000Z"
+  },
+  {
+    "id": "00000000-0000-0000-0000-bbbbbbbbbbbb",
+    "source": "example-source",
+    "strategy": "percentage",
+    "author_email": "test@example.com",
+    "annotations": {
+      "workers/message": "fixture",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {"version_id": "00000000-0000-0000-0000-000000000000", "percentage": 100}
+    ],
+    "created_on": "2025-01-02T00:00:00.000000Z"
+  }
+]
