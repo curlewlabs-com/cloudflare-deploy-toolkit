@@ -198,6 +198,21 @@ reshape_deployments_list_json() {
         return 1
     fi
 
+    # The reshape writes each of the pair as one version at 100%, so it must
+    # read one: an entry with no versions, or a split across versions, would
+    # otherwise come out as a well-formed fixture and hide the very schema
+    # drift or gradual deployment a re-capture is meant to surface.
+    if ! jq -e '.[-2:] | all(
+        type == "object"
+        and (.versions | type) == "array"
+        and (.versions | length) == 1
+        and (.versions[0].version_id | type) == "string"
+        and .versions[0].percentage == 100
+    )' <"$input" >/dev/null; then
+        echo "reshape_deployments_list_json: the last two deployments in $input must each serve one version at 100%" >&2
+        return 1
+    fi
+
     jq --arg older "$older_uuid" \
         --arg latest "$latest_uuid" \
         --arg ts "$test_timestamp" \

@@ -227,3 +227,22 @@ reshape() {
   echo "$output" > "$TMP/out2.json"
   cmp -s "$TMP/out1.json" "$TMP/out2.json"
 }
+
+# ----------------------------------------------------------------------
+# The reshape writes each entry as one version at 100%, so an entry that does
+# not read that way must be refused, not normalized: `[{},{}]` used to come out
+# as a valid fixture, hiding the schema drift a re-capture exists to show.
+# ----------------------------------------------------------------------
+@test "entries without a single serving version are refused" {
+  for doc in \
+    '[{},{}]' \
+    '[{"versions":[]},{"versions":[{"version_id":"a","percentage":100}]}]' \
+    '[{"versions":[{"version_id":"a","percentage":50},{"version_id":"b","percentage":50}]},{"versions":[{"version_id":"c","percentage":100}]}]' \
+    '[{"versions":[{"percentage":100}]},{"versions":[{"version_id":"c","percentage":100}]}]'
+  do
+    printf '%s\n' "$doc" > "$TMP/in.json"
+    run reshape
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"must each serve one version at 100%"* ]]
+  done
+}
