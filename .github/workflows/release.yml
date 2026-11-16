@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  reviewed-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a commit already merged to main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+  verify:
+    needs: reviewed-source
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The archive is the tagged tree and nothing else. Publishing the draft is
+      # a separate maintainer step, and it makes the release and this archive
+      # immutable, which is what lets a consumer pin the archive by digest.
+      - name: Build the release archive and draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir dist
+          git archive --format=tar.gz --prefix="cloudflare-deploy-toolkit-$TAG/" \
+            -o "dist/cloudflare-deploy-toolkit-$TAG.tar.gz" "$GITHUB_SHA"
+          (cd dist && sha256sum "cloudflare-deploy-toolkit-$TAG.tar.gz" > SHA256SUMS)
+          cat dist/SHA256SUMS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$TAG" --notes "Draft for $TAG." dist/*

@@ -1,0 +1,70 @@
+# Example unlock workflow for a stateful Cloudflare Worker using
+# cloudflare-deploy-toolkit. Run this manually after a catastrophic
+# deploy failure leaves the `_deploy_lock` row stuck at `locked = 1` and
+# the recovery path couldn't reach the unlock step (e.g. the runner died,
+# the network dropped, the recovery path itself errored out).
+#
+# CONSUMER ADAPTATION:
+#   1. Replace `<WORKER>` with your Worker's short name in the workflow
+#      / job labels.
+#   2. Replace `<PROJECT>` with the path-prefix to your service directory
+#      inside the repo (e.g. `services/api` or `my-product/service`).
+#   3. Point the run step at your unlock script. The reference
+#      implementation is a `scripts/unlock-db.sh` that resolves the D1
+#      database name for the chosen env and calls
+#      `wrangler d1 execute "$DB_NAME" --remote --command "UPDATE
+#      _deploy_lock SET locked = 0 WHERE id = 1"`. The script can be a
+#      one-liner - there's no orchestration to do.
+#   4. If your project uses a different package manager, replace bun with
+#      npm/pnpm/yarn in the setup step.
+#   5. Replace `<BUN_VERSION>` with the exact Bun version your project pins.
+
+name: <WORKER> - Unlock Database
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target database to unlock"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  unlock:
+    name: Unlock Database (${{ github.event.inputs.environment || 'staging' }})
+    # CONSUMER: pin to a specific GitHub-hosted runner label (e.g.
+    # `ubuntu-24.04`) - the unlock workflow is your emergency escape hatch
+    # for when the self-hosted pool is itself the outage, so it cannot ride
+    # a floating `ubuntu-latest` tag that GitHub may roll to a not-yet-
+    # validated LTS at the moment you most need it. Pick the current label
+    # from https://docs.github.com/en/actions/reference/runners/github-hosted-runners.
+    # If you have a self-hosted pool with a different reliability profile,
+    # use that instead.
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          set-safe-directory: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: <BUN_VERSION>
+
+      - name: Unlock Database
+        working-directory: <PROJECT>
+        # CONSUMER: replace with your unlock script path. The script
+        # should accept the env name ("staging" or "production") as $1
+        # and run a `wrangler d1 execute --remote --command "UPDATE
+        # _deploy_lock SET locked = 0 WHERE id = 1"` for that env.
+        run: |
+          chmod +x scripts/unlock-db.sh
+          ./scripts/unlock-db.sh "$DEPLOY_ENV"
+        env:
+          DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

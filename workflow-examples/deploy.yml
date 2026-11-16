@@ -1,0 +1,446 @@
+# Example deploy workflow for a stateful Cloudflare Worker using the
+# cloudflare-deploy-toolkit. Generalized from a working production
+# workflow with the consumer-specific bits flagged.
+#
+# CONSUMER ADAPTATION:
+#   1. Replace `<WORKER>` with your Worker's short name in workflow / job /
+#      concurrency labels.
+#   2. Replace `<PROJECT>` with the path-prefix to your service directory
+#      inside the repo (e.g. `services/api` or, for a monorepo,
+#      `my-product/service`).
+#   3. Replace `<I18N_PATH>`, `<DEPS>`, etc. in the change-detection step
+#      with the file/directory globs that should trigger a deploy.
+#   4. Replace the SCRIPT_NAME values in the verify step with your
+#      production / staging Worker script names.
+#   5. Point the verify helper at your vendored or submodule toolkit checkout,
+#      or replace it with the path to your copied verify helper.
+#   6. If your Worker doesn't use D1, drop the D1-related steps in
+#      `scripts/deploy-safe.sh` (your equivalent script).
+#   7. If your project uses a different package manager, replace bun with
+#      npm/pnpm/yarn in the setup steps.
+#   8. Replace `<PROD_HOSTNAME>` / `<STAGING_HOSTNAME>` in the deployment
+#      status step with the public URLs for each environment.
+#   9. Replace `<BUN_VERSION>` and `<NODE_VERSION>` with the exact Bun and
+#      Node versions your project pins.
+#
+# RUNNER PREREQUISITES:
+#   The default `runs-on: self-hosted` example assumes a runner with `git`,
+#   `curl`, `jq`, `gh`, and a Python 3.14 `python3` already on PATH: the change-detector
+#   queries the GitHub Deployments API via `gh api`, and the verify step below
+#   runs `bin/verify_deployment.py`, which spawns `curl` for its retry policy
+#   and `jq` to read the live-SHA filter. GitHub-hosted Ubuntu images
+#   (e.g. `ubuntu-24.04`) ship all but that Python - their python3 is older,
+#   so add an `actions/setup-python` step there; on a self-hosted runner
+#   provision them up front. Node and Bun are installed by the
+#   setup actions below, so they don't need to be pre-provisioned. Do
+#   not substitute a floating `ubuntu-latest` label - `*-latest` runner
+#   labels float and break consumers silently when GitHub rolls the next
+#   LTS. Pick a pinned label from
+#   https://docs.github.com/en/actions/reference/runners/github-hosted-runners.
+
+name: <WORKER> - Deploy Service
+
+on:
+  workflow_run:
+    workflows: ["CI"] # CONSUMER: name of the upstream CI workflow
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deploy target"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+# A workflow_run trigger (CI on main) targets staging when it deploys at all -
+# the environment input only exists on workflow_dispatch. The fallback keeps workflow-run and
+# manual-dispatch paths in
+# separate concurrency lanes.
+concurrency:
+  group: deploy-<WORKER>-${{ github.event.inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+# deployments: write covers the anchor query (the change-detector
+# walks the Deployments REST API for the last successful deploy SHA)
+# and the deployment-record steps that record this run as a
+# deployment + status against the per-service env namespace
+# (<WORKER>-staging / <WORKER>-production). See README.md sec."Change-detection" for
+# why bare "staging" is the wrong namespace when more than one service
+# deploys to the same repo.
+permissions:
+  contents: read
+  deployments: write
+
+env:
+  # CONSUMER: drop these if you're not on a self-hosted runner with shared
+  # cache. They live outside the workspace so they survive between runs.
+  BUN_INSTALL_CACHE_DIR: "<RUNNER_CACHE_DIR>/bun-cache"
+  BUN_INSTALL: "<RUNNER_CACHE_DIR>/bun-meta"
+  # CONSUMER: set this to the account that owns the Worker. Account-owned API
+  # tokens often cannot call /accounts for discovery, so verification must use
+  # an explicit account ID instead of probing the API for one.
+  CLOUDFLARE_ACCOUNT_ID: "<CLOUDFLARE_ACCOUNT_ID>"
+
+jobs:
+  # Manual deploys need their own validation since CI may not have run for the
+  # chosen commit. Automated (workflow_run) deploys skip this because CI
+  # already passed the same check.sh suite.
+  checks:
+    name: Pre-deploy checks
+    if: github.event_name == 'workflow_dispatch'
+    # CONSUMER: pin to a specific GitHub-hosted label (e.g. `ubuntu-24.04`)
+    # if you don't have a self-hosted pool - never `ubuntu-latest` (banned
+    # as a floating tag per the RUNNER PREREQUISITES note above).
+    runs-on: self-hosted
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          set-safe-directory: false
+          # CONSUMER: keep for a submodule install of the toolkit; drop for a
+          # vendored copy.
+          submodules: true
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: "<NODE_VERSION>"
+
+      # CONSUMER: a HOME of the job's own, because setup-bun installs to
+      # ~/.bun/bin and the runner instances on one host share an account: a
+      # job at a new Bun and one at the old would replace each other's binary.
+      # Drop `env` and `no-cache` on a GitHub-hosted runner.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        env:
+          HOME: ${{ runner.temp }}/bun-runtime
+        with:
+          bun-version: <BUN_VERSION>
+          no-cache: true
+
+      - name: Checks
+        run: <PROJECT>/scripts/check.sh # CONSUMER: your check script
+
+  deploy:
+    name: Deploy to ${{ github.event.inputs.environment || 'staging' }}
+    # CONSUMER: pin to a specific GitHub-hosted label (e.g. `ubuntu-24.04`)
+    # if you don't have a self-hosted pool - never `ubuntu-latest` (banned
+    # as a floating tag per the RUNNER PREREQUISITES note above). Must
+    # match whatever you set on the `checks` job's runs-on above.
+    runs-on: self-hosted
+    needs: [checks]
+    # A workflow_run deploys only after a CI run that a push to main started; a
+    # CI run dispatched by hand deploys nothing on its own, and deploying its
+    # SHA is a workflow_dispatch of this workflow.
+    if: |
+      always() && (
+        (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push')
+      )
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # A fast-follow merge can land between the workflow_run trigger and
+          # this checkout, causing change detection to evaluate the wrong
+          # commit. Pin to the SHA that actually passed CI.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # CONSUMER: keep for a submodule install of the toolkit; drop for a
+          # vendored copy.
+          submodules: true
+          set-safe-directory: false
+          fetch-depth: 0
+
+      # workflow_run fires for every CI completion on main, not just service
+      # changes. Skip early when no relevant paths changed.
+      #
+      # Anchor: SHA of the most recent successful deployment record for
+      # this environment in the GitHub Deployments API. The deployment-record
+      # steps below create a deployment + status per actual deploy, so
+      # this anchor is the last deploy that passed its gates, not which
+      # workflow runs completed. Runs that skipped via the change-
+      # detector, never reached deploy (CI failure, cancel), or failed
+      # mid-deploy don't move the anchor.
+      #
+      # The Deployments REST API doesn't filter by status, so we walk
+      # the most recent 20 deployments newest-first and take the first
+      # whose latest status is "success".
+      #
+      # Bias toward deploying: every error path falls through to
+      # skip=false. An unnecessary deploy is cheap; a skipped deploy
+      # with relevant changes is dangerous.
+      - name: Check for service changes
+        if: github.event_name == 'workflow_run'
+        id: changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+
+          # CONSUMER: per-service env namespace, e.g. <WORKER>-staging.
+          # Bare "staging" / "production" share the Deployments-API anchor
+          # pool with every other service that deploys to the same repo,
+          # so one service's success can advance another service's
+          # change-detector anchor to a SHA where the other was never
+          # deployed. Always namespace by service.
+          ENV_NAME="<WORKER>-staging"
+          # Note: stderr is intentionally NOT suppressed on the gh api /
+          # git fetch / git diff calls below. On success they're silent;
+          # on failure their stderr flows to the workflow log so the
+          # operator can see WHY the bias-toward-deploying path fired
+          # (auth/permission/network) instead of just the consequence.
+          DEPLOYMENTS_TSV=$(gh api \
+            "/repos/${{ github.repository }}/deployments?environment=$ENV_NAME&per_page=20" \
+            --jq '.[] | [.id, .sha] | @tsv') || DEPLOYMENTS_TSV=""
+
+          LAST_SHA=""
+          while IFS=$'\t' read -r DEP_ID DEP_SHA; do
+            [ -z "$DEP_ID" ] && continue
+            STATE=$(gh api \
+              "/repos/${{ github.repository }}/deployments/$DEP_ID/statuses?per_page=1" \
+              --jq '.[0].state // empty') || STATE=""
+            if [ "$STATE" = "success" ]; then
+              LAST_SHA="$DEP_SHA"
+              break
+            fi
+          done <<< "$DEPLOYMENTS_TSV"
+
+          if [ -z "$LAST_SHA" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "No prior successful deployment for $ENV_NAME - deploying to be safe."
+            exit 0
+          fi
+
+          # The deployment anchor can be outside the currently advertised
+          # refs. Probe for it locally; if absent, fetch on demand. cat-file -e's
+          # negative-path stderr ("Not a valid object name") is expected
+          # on the normal fetch flow, so it's the only call here whose
+          # stderr stays suppressed; git fetch's failure stderr flows to
+          # the workflow log per the policy above.
+          if ! git cat-file -e "$LAST_SHA^{commit}" 2>/dev/null; then
+            if ! git fetch --no-tags --quiet origin "$LAST_SHA"; then
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "Could not fetch anchor SHA $LAST_SHA - deploying to be safe."
+              exit 0
+            fi
+          fi
+
+          # Name the anchor and HEAD ends of the comparison. The verdict lines below print the
+          # anchor but not HEAD, and HEAD is the end a reader gets wrong: this
+          # job checks out the commit CI validated, while the head SHA the
+          # Actions UI and the runs API report for the run is github.sha. The
+          # default branch usually moves while CI runs, so the two routinely
+          # differ, and a skip
+          # reproduced from the run page then diffs a range this job never
+          # evaluated - which reads as a dropped deploy rather than a correct
+          # no-op.
+          echo "Anchor $LAST_SHA -> HEAD $(git rev-parse HEAD)."
+          echo "  HEAD is the CI-validated commit this run deploys, not this run's github.sha ${{ github.sha }}; reproduce the verdict against HEAD."
+
+          # CONSUMER: list the path globs that should trigger a deploy.
+          if ! CHANGED=$(git diff --name-only "$LAST_SHA" HEAD -- \
+              '<PROJECT>/' '<I18N_PATH>/' 'package.json' 'bun.lock'); then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "git diff failed against $LAST_SHA - deploying to be safe."
+            exit 0
+          fi
+
+          if [ -z "$CHANGED" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No service-related changes since $LAST_SHA - skipping deploy."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Changed files since $LAST_SHA:"
+            echo "$CHANGED"
+          fi
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        if: steps.changes.outputs.skip != 'true'
+        with:
+          node-version: "<NODE_VERSION>"
+
+      # CONSUMER: a HOME of the job's own, because setup-bun installs to
+      # ~/.bun/bin and the runner instances on one host share an account: a
+      # job at a new Bun and one at the old would replace each other's binary.
+      # Drop `env` and `no-cache` on a GitHub-hosted runner.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.changes.outputs.skip != 'true'
+        env:
+          HOME: ${{ runner.temp }}/bun-runtime
+        with:
+          bun-version: <BUN_VERSION>
+          no-cache: true
+
+      # Under the lock because the env above points this at a cache every
+      # runner instance on the host shares, and bun promises nothing about two
+      # of them writing it at once. Named for the store so it serializes
+      # against anything else that writes it. CONSUMER: drop this wrapper along
+      # with the BUN_INSTALL_CACHE_DIR env above if your cache is per-job -
+      # there is nothing to serialize then.
+      - name: Install dependencies
+        if: steps.changes.outputs.skip != 'true'
+        uses: curlewlabs-com/local-mutex@v2
+        with:
+          name: bun-cache
+          run: bun install --frozen-lockfile
+
+      - name: Deploy context
+        if: steps.changes.outputs.skip != 'true'
+        env:
+          DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "### Deploy Context" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | $DEPLOY_ENV |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SHA | ${DEPLOY_SHA::7} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger | ${{ github.event_name }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bun | $(bun --version) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Wrangler | $(bunx wrangler --version 2>/dev/null) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+      # Record this run as a GitHub Deployment against the target environment.
+      # The change-detector above queries this same API to find the last
+      # successful deploy SHA, so creating a record per actual deploy is what
+      # keeps the anchor on deploys that succeeded. The matching close-out
+      # below runs with always() - see the CONSUMER note there for what always()
+      # does and does not buy you.
+      #
+      # required_contexts is sent as an empty list on purpose: it is GitHub's
+      # documented bypass of the commit-status verification it otherwise runs
+      # over every status context on the ref before it creates a deployment. A
+      # refused create would stop the deploy at this step.
+      # https://docs.github.com/en/rest/deployments/deployments
+      - name: Start deployment record
+        id: deployment
+        if: steps.changes.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CONSUMER: per-service env namespace; must match ENV_NAME in
+          # the change-detector above.
+          RECORD_ENV: <WORKER>-${{ github.event.inputs.environment || 'staging' }}
+          RECORD_REF: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RECORD_DESC: "<WORKER> deploy"
+        run: |
+          set -eu
+          deployment_id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" \
+            -f "ref=$RECORD_REF" \
+            -f "environment=$RECORD_ENV" \
+            -f "description=$RECORD_DESC" \
+            -F auto_merge=false \
+            -F transient_environment=true \
+            -f 'required_contexts[]' \
+            --jq .id)
+          echo "deployment_id=$deployment_id" >> "$GITHUB_OUTPUT"
+          gh api --silent -X POST "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+            -f state=in_progress \
+            -f "log_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA/checks" \
+            -f "description=$RECORD_DESC"
+
+      - name: Deploy
+        if: steps.changes.outputs.skip != 'true'
+        working-directory: <PROJECT>
+        # CONSUMER: this is your safe-deploy wrapper. With the toolkit's
+        # deploy-lib, the wrapper is ~30 lines of boilerplate plus a few
+        # lines per hook: it exports DEPLOY_DB_*, DEPLOY_WRANGLER_ENV_* and
+        # the PREFLIGHT_CMD / MIGRATE_CMD / POSTFLIGHT_CMD hook commands,
+        # then runs safe_deploy_pipeline.py "$@". See deploy-lib/README.md
+        # for the API and an inlined wrapper example.
+        run: ./scripts/deploy-safe.sh "$DEPLOY_ENV" --sha "${DEPLOY_SHA::7}"
+        env:
+          DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Keep this visible: upload-artifact skips hidden paths by default,
+          # and failed deploys need the diagnostics bundle without extra flags.
+          DEPLOY_DIAGNOSTICS_DIR: deploy-diagnostics
+
+      # Forensic capture for the next time something goes wrong. The
+      # 2026-04-08 incident was reconstructed by hand from a CI step log;
+      # with this artifact, the deploy pipeline preserves the current run's
+      # recovery state alongside only the Wrangler logs created during the
+      # failing deploy instead of uploading the runner's full log history.
+      # The path stays non-hidden because upload-artifact skips hidden paths
+      # unless the workflow opts into hidden-file capture explicitly.
+      - name: Upload deploy logs on failure
+        if: failure() && steps.changes.outputs.skip != 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: deploy-failure-${{ github.event.inputs.environment || 'staging' }}-${{ github.run_id }}
+          path: <PROJECT>/deploy-diagnostics/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Verify deployment landed via the Cloudflare API rather than curling the
+      # endpoint directly. Bot Fight Mode (enabled zone-wide) blocks automated
+      # HTTP requests with a managed challenge, so curl from CI gets a 403.
+      # The API bypasses BFM entirely and confirms the Worker is deployed.
+      - name: Verify deployment
+        if: steps.changes.outputs.skip != 'true'
+        env:
+          DEPLOY_ENV: ${{ github.event.inputs.environment || 'staging' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          # CONSUMER: replace these with your production / staging script names.
+          if [ "$DEPLOY_ENV" = "production" ]; then
+            SCRIPT_NAME="<WORKER>-api"
+          else
+            SCRIPT_NAME="<WORKER>-api-staging"
+          fi
+
+          # CONSUMER: default assumes the toolkit is vendored at
+          # vendor/cloudflare-deploy-toolkit. Override DEPLOY_TOOLKIT_DIR or
+          # replace this with the path to your copied verify helper.
+          TOOLKIT_DIR="${DEPLOY_TOOLKIT_DIR:-vendor/cloudflare-deploy-toolkit}"
+          export SCRIPT_NAME
+          "$TOOLKIT_DIR/bin/verify_deployment.py"
+
+          echo "Deployment verified."
+
+      # Attempt the close-out whatever the job's outcome, so the next run's
+      # change-detector reads a success or failure status rather than a
+      # lingering in_progress.
+      #
+      # CONSUMER: always() guarantees this step RUNS, not that its single API
+      # call SUCCEEDS. A dropped connection to api.github.com here leaves the
+      # record at in_progress with no terminal status - the exact state the step
+      # exists to prevent - and the job goes red without saying why. If you need
+      # that record closed, retry the POST below a few times and fail the job
+      # if none land. A duplicate status POST is harmless - the record's state
+      # is its latest status - which is what makes the retry safe. (This repo
+      # does it in .github/actions/deployment-record-finish,
+      # which is not part of the vendored toolkit.)
+      #
+      # auto_inactive=true retires nothing here: GitHub applies it to an
+      # environment's earlier non-transient, non-production deployments, and
+      # the record above is created transient, so an earlier record keeps its
+      # own latest status. The anchor query needs nothing retired - it takes
+      # the newest record whose latest status is `success`.
+      # https://docs.github.com/en/rest/deployments/statuses
+      # The deployment-status API has no `cancelled` state, so a cancelled job
+      # closes its record as `inactive`.
+      - name: Update deployment status
+        if: always() && steps.deployment.outputs.deployment_id
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
+          RECORD_STATE: ${{ job.status == 'success' && 'success' || (job.status == 'cancelled' && 'inactive' || 'failure') }}
+          # CONSUMER: set the live URL for this environment (shown in the
+          # GitHub Environments UI as "View deployment").
+          # Recorded only for a deploy that worked. Gated on success first: an
+          # empty string is falsy, so a test for failure would fall through
+          # to a hostname.
+          ENV_URL: ${{ job.status == 'success' && ((github.event.inputs.environment || 'staging') == 'production' && 'https://<PROD_HOSTNAME>' || 'https://<STAGING_HOSTNAME>') || '' }}
+        run: |
+          set -eu
+          gh api --silent -X POST "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
+            -f "state=$RECORD_STATE" \
+            -f "environment_url=$ENV_URL" \
+            -f "log_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA/checks" \
+            -F auto_inactive=true

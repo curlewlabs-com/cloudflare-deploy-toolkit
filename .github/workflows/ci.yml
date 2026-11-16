@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.ref_name == 'main' && github.run_id || 'pr' }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
+jobs:
+  test:
+    name: Self-tests (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # The pipeline runs on whatever a consumer's deploy job runs on, and
+        # the timestamp and locale handling differ between GNU and BSD hosts.
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          # renovate: datasource=python-version depName=python
+          python-version: "3.14.4"
+      # shellcheck and bats are release archives at fixed versions, each
+      # checked against its digest. jq ships on both runner images.
+      - name: Install pinned shellcheck and bats
+        env:
+          # renovate: datasource=github-releases depName=koalaman/shellcheck
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256_LINUX_X86_64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          SHELLCHECK_SHA256_DARWIN_AARCH64: 56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79
+          # renovate: datasource=github-tags depName=bats-core/bats-core
+          BATS_VERSION: v1.14.0
+          BATS_SHA256: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177
+        run: |
+          set -eu
+          case "$RUNNER_OS" in
+            Linux) platform=linux.x86_64; sum=$SHELLCHECK_SHA256_LINUX_X86_64 ;;
+            macOS) platform=darwin.aarch64; sum=$SHELLCHECK_SHA256_DARWIN_AARCH64 ;;
+          esac
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools/bin"
+          curl -fsSL --retry 3 -o "$tools/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.$platform.tar.xz"
+          echo "$sum  $tools/shellcheck.tar.xz" | shasum -a 256 -c -
+          tar -xJf "$tools/shellcheck.tar.xz" -C "$tools"
+          cp "$tools/shellcheck-$SHELLCHECK_VERSION/shellcheck" "$tools/bin/"
+          curl -fsSL --retry 3 -o "$tools/bats.tar.gz" \
+            "https://github.com/bats-core/bats-core/archive/refs/tags/$BATS_VERSION.tar.gz"
+          echo "$BATS_SHA256  $tools/bats.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$tools/bats.tar.gz" -C "$tools"
+          "$tools/bats-core-${BATS_VERSION#v}/install.sh" "$tools"
+          echo "$tools/bin" >> "$GITHUB_PATH"
+      - name: Link GNU grep as ggrep (Linux)
+        if: runner.os == 'Linux'
+        # check-fixture-purity.sh requires GNU grep under its g-name.
+        run: sudo ln -sf /bin/grep /usr/local/bin/ggrep
+      - name: Install bash and GNU grep (macOS)
+        if: runner.os == 'macOS'
+        # Homebrew pins no formula version, so these two move with the
+        # formula: the suites need a bash that stops on a failing [[ ]] under
+        # set -e, which /bin/bash 3.2 does not, and GNU grep as ggrep.
+        run: brew install bash grep
+      - name: Run the self-tests
+        run: ./test-harness/test/check.sh
+
+  conclusion:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    if: always()
+    steps:
+      - name: Require every self-test job to pass
+        env:
+          TEST: ${{ needs.test.result }}
+        run: test "$TEST" = success
