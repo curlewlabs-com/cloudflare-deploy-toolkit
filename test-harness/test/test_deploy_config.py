@@ -88,6 +88,18 @@ class ArgumentParsing(unittest.TestCase):
             with self.subTest(argv=argv), self.assertRaises(deploy_config.UsageError):
                 deploy_config.parse_args(argv)
 
+    def test_a_sha_flag_never_swallows_the_word_after_it(self) -> None:
+        # A flag or an environment read as the sha drops it from the command
+        # line: `--sha --expected-serving-sha X` would deploy unbound, and
+        # `--sha production staging` would deploy staging.
+        for argv in (
+            ["production", "--sha", "--expected-serving-sha", "a" * 40],
+            ["--sha", "production", "staging"],
+            ["staging", "--sha", "-h"],
+        ):
+            with self.subTest(argv=argv), self.assertRaises(deploy_config.UsageError):
+                deploy_config.parse_args(argv)
+
     def test_a_sha_flag_with_nothing_after_it_falls_back_to_the_default(self) -> None:
         # A form that instead consumed the next positional would silently deploy
         # the wrong environment.

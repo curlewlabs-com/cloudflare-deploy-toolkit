@@ -137,7 +137,10 @@ def parse_args(argv: Sequence[str]) -> Invocation:
 
     `--sha` with nothing after it leaves the sha unset and takes the git
     default, rather than refusing: a trailing flag is a wrapper passing through
-    an unset variable, and the default is the value it was reaching for.
+    an unset variable, and the default is the value it was reaching for. A
+    `--sha` followed by another flag or an environment name is refused instead:
+    reading that word as the sha would drop it from the command line, and the
+    command would mean something its caller never wrote.
     """
     env = ""
     sha = ""
@@ -150,6 +153,8 @@ def parse_args(argv: Sequence[str]) -> Invocation:
         elif argument == "--sha":
             index += 1
             sha = argv[index] if index < len(argv) else ""
+            if sha.startswith("-") or sha in ENVIRONMENTS:
+                raise UsageError(f"--sha takes a commit, not {sha!r}")
         elif argument == "--expected-serving-sha":
             # Unlike --sha, an empty value has no default to fall back on: read
             # as "no expected build", a trailing or blanked flag would turn the
