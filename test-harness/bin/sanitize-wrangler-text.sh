@@ -93,14 +93,21 @@ triggers) INJECT_VERSION_ID="" ;;
     ;;
 esac
 
-# Build the consumer-binding scrub script. We run these BEFORE the generic
-# scrubs so that a binding value matching a generic pattern (e.g. a token
-# that looks like a UUID) gets the consumer-specific REDACTED placeholder
-# rather than the generic zero placeholder.
+# Build the consumer-binding scrub script. These run after the ANSI strip,
+# because wrangler colors a binding's name and value separately and the codes
+# between them would otherwise stop the pattern matching, and BEFORE the
+# generic scrubs, so that a binding value matching a generic pattern (e.g. a
+# token that looks like a UUID) gets the consumer-specific REDACTED placeholder
+# rather than the generic zero placeholder. Wrangler prints a binding as
+# `env.NAME (value)`; older releases quoted the value, `env.NAME ("value")`.
+# A value can hold a parenthesis or an escaped quote, so no closing delimiter
+# marks where it ends: everything from the opening parenthesis to the end of
+# the line is replaced, which drops the binding-type column after it too.
 CONSUMER_SCRUBS=""
 for binding in $SCRUB_BINDINGS; do
     CONSUMER_SCRUBS="${CONSUMER_SCRUBS}
-  s/(env\\.${binding}) \\(\"[^\"]*\"\\)/\\1 (\"REDACTED\")/"
+  s/(env\\.${binding}) \\(\".*/\\1 (\"REDACTED\")/
+  s/(env\\.${binding}) \\([^\"].*/\\1 (REDACTED)/"
 done
 
 # Literal ESC byte for ANSI escape code matching. Wrangler emits color codes
@@ -109,9 +116,9 @@ done
 ESC=$(printf '\033')
 
 # Apply scrubbers in order. The order matters:
-#   0. Consumer-specific binding values (run first so they take precedence
-#      over the generic catch-all scrubs below).
-#   1. ANSI strip - subsequent regexes assume plain text.
+#   0. ANSI strip - every regex after it assumes plain text.
+#   1. Consumer-specific binding values (before the generic catch-all scrubs
+#      below, so they take precedence).
 #   2. Wrangler version banner normalization - eats the "(update available ...)"
 #      parenthetical so the fixture doesn't churn on every wrangler bump.
 #   3. Total Upload size - varies on every code change to the Worker.
@@ -121,8 +128,8 @@ ESC=$(printf '\033')
 #   6. Generic 36-char dash UUIDs - defense in depth for any wrangler-emitted
 #      UUID we didn't anticipate. Replaces with a slot-zero placeholder.
 #   7. Generic 32-char hex (Cloudflare account IDs) - same defense-in-depth.
-sed -E "${CONSUMER_SCRUBS}
-  s/${ESC}\\[[0-9;]*m//g
+sed -E "s/${ESC}\\[[0-9;]*m//g
+${CONSUMER_SCRUBS}
   s/wrangler [0-9]+\\.[0-9]+\\.[0-9]+( \\(update available [0-9]+\\.[0-9]+\\.[0-9]+\\))?/wrangler 0.0.0/
   s/Total Upload: [0-9.]+ KiB \\/ gzip: [0-9.]+ KiB/Total Upload: 0.00 KiB \\/ gzip: 0.00 KiB/
   s/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z/${WRANGLER_HARNESS_TEST_TIMESTAMP}/g

@@ -40,7 +40,6 @@ def staging(
         deploy_config.Invocation(
             env="staging",
             sha="abc1234",
-            dry_run=False,
             expected_serving_sha=expected_serving_sha,
         ),
         environ,
@@ -52,7 +51,6 @@ class ArgumentParsing(unittest.TestCase):
         parsed = deploy_config.parse_args(["production", "--sha", "deadbee"])
         self.assertEqual(parsed.env, "production")
         self.assertEqual(parsed.sha, "deadbee")
-        self.assertFalse(parsed.dry_run)
 
     def test_the_expected_serving_commit_comes_off_argv(self) -> None:
         # An argument rather than a variable: a pipeline that predates the bind
@@ -90,9 +88,17 @@ class ArgumentParsing(unittest.TestCase):
             with self.subTest(argv=argv), self.assertRaises(deploy_config.UsageError):
                 deploy_config.parse_args(argv)
 
-    def test_dry_run_is_a_flag_in_any_position(self) -> None:
-        self.assertTrue(deploy_config.parse_args(["--dry-run", "staging"]).dry_run)
-        self.assertTrue(deploy_config.parse_args(["staging", "--dry-run"]).dry_run)
+    def test_a_sha_flag_never_swallows_the_word_after_it(self) -> None:
+        # A flag or an environment read as the sha drops it from the command
+        # line: `--sha --expected-serving-sha X` would deploy unbound, and
+        # `--sha production staging` would deploy staging.
+        for argv in (
+            ["production", "--sha", "--expected-serving-sha", "a" * 40],
+            ["--sha", "production", "staging"],
+            ["staging", "--sha", "-h"],
+        ):
+            with self.subTest(argv=argv), self.assertRaises(deploy_config.UsageError):
+                deploy_config.parse_args(argv)
 
     def test_a_sha_flag_with_nothing_after_it_falls_back_to_the_default(self) -> None:
         # A form that instead consumed the next positional would silently deploy
@@ -104,7 +110,7 @@ class ArgumentParsing(unittest.TestCase):
     def test_an_unknown_argument_and_a_missing_environment_are_usage_errors(
         self,
     ) -> None:
-        for argv in (["staging", "--wat"], ["--dry-run"], []):
+        for argv in (["staging", "--wat"], ["staging", "--dry-run"], []):
             with self.subTest(argv=argv), self.assertRaises(deploy_config.UsageError):
                 deploy_config.parse_args(argv)
 
@@ -131,7 +137,7 @@ class StartupRefusals(unittest.TestCase):
         }
         with self.assertRaises(deploy_config.ConfigError) as refusal:
             deploy_config.resolve(
-                deploy_config.Invocation(env="staging", sha="abc1234", dry_run=False),
+                deploy_config.Invocation(env="staging", sha="abc1234"),
                 environ,
             )
         self.assertIn("MIGRATE_CMD", str(refusal.exception))
@@ -151,9 +157,7 @@ class StartupRefusals(unittest.TestCase):
         # this refusal exists for.
         with self.assertRaises(deploy_config.ConfigError):
             deploy_config.resolve(
-                deploy_config.Invocation(
-                    env="production", sha="abc1234", dry_run=False
-                ),
+                deploy_config.Invocation(env="production", sha="abc1234"),
                 COMPLETE,
             )
 
@@ -193,25 +197,10 @@ class StartupRefusals(unittest.TestCase):
         self.assertIsNone(config.preflight_cmd)
         self.assertIsNone(config.postflight_cmd)
 
-    def test_the_staging_bootstrap_flag_is_the_literal_true(self) -> None:
-        # Anything else disables the Worker rollback for the rest of the run on
-        # evidence nobody checked, so only the documented value opts in.
-        self.assertTrue(
-            staging(DEPLOY_ALLOW_STAGING_BOOTSTRAP="true").allow_staging_bootstrap
-        )
-        for value in ("TRUE", "1", "yes", ""):
-            with self.subTest(value=value):
-                self.assertFalse(
-                    staging(
-                        DEPLOY_ALLOW_STAGING_BOOTSTRAP=value
-                    ).allow_staging_bootstrap
-                )
-
-    def test_an_expected_serving_build_is_a_full_sha_and_no_bootstrap(self) -> None:
+    def test_an_expected_serving_build_is_a_full_sha(self) -> None:
         # The bind requires the serving version's commit to equal this exactly,
         # so only a full lowercase SHA can ever match, and anything else is
-        # refused at startup rather than at the bind; a bootstrap tolerates
-        # nothing serving at all.
+        # refused at startup rather than at the bind.
         full = "abc1234" + "0" * 33
         self.assertEqual(staging(full).expected_serving_sha, full)
         self.assertEqual(staging().expected_serving_sha, "")
@@ -221,8 +210,6 @@ class StartupRefusals(unittest.TestCase):
                 self.assertRaises(deploy_config.ConfigError),
             ):
                 staging(value)
-        with self.assertRaises(deploy_config.ConfigError):
-            staging(full, DEPLOY_ALLOW_STAGING_BOOTSTRAP="true")
 
     def test_the_commit_written_on_uploads_is_the_full_form_of_the_sha(
         self,

@@ -306,41 +306,24 @@ new-migration constraint clearly enough at deploy time ("Uploading a version
 with Durable Object migrations is not supported") that an additional guard would
 only over-reject already-applied tags.
 
-## Known issues
+## Limits
 
-These are open and tracked in this repository's issues:
-
-- **The relocation's pause deadline does not reach inside a wrangler call.**
-  The deadline is checked between steps and bounds each fenced hook, but a
-  wrangler subprocess the pipeline itself runs while the source is fenced (a
-  lock read, the serving-version check) has no timeout of its own, so a hung
-  call holds the fence for as long as it hangs.
-- **`test-harness/bin/check-fixture-purity.sh` can pass without scanning.** It
-  word-splits fixture paths, so a path containing whitespace is not read, and it
-  treats a failed `grep` or `find` like a clean result. Keep fixture paths free
-  of whitespace and readable until this is fixed.
-- **`test-harness/lib/capture-helpers.sh` normalizes a deployments list without
-  validating it first.** A captured list whose entries lack their `versions`
-  fields still becomes a well-formed single-version fixture.
-- **`test-harness/bin/sanitize-wrangler-text.sh` does not redact
-  `SCRUB_BINDINGS` values from current wrangler output.** Its binding pattern
-  expects `env.NAME ("value")`, and current wrangler prints `env.NAME (value)`
-  with color codes around the name and the value, so only the generic UUID, hex
-  and email scrubs apply. List each value you must keep out of a fixture in the
-  fixture-purity scan's forbidden literals as well.
-- **A `--sha` with no value takes the next argument as the SHA.**
-  `safe_deploy_pipeline.py production --sha --dry-run` reads `--dry-run` as the
-  SHA and runs a live deploy. Always pass a value after `--sha`; setting
-  `DEPLOY_COMMIT_SHA` makes the pipeline refuse a `--sha` that does not
-  abbreviate it.
-- **`bin/verify_deployment.py` hides why its deployments read failed.** It runs
-  `curl -sf`, so an authentication or HTTP error exits with curl's status and no
-  message; rerun the request by hand to see it.
-- **`workflow-examples/deploy.yml` does not stop an older commit deploying
-  after a newer one.** Its automatic deploy is serialized by concurrency, which
-  orders runs by start rather than by commit, so a slow CI run for an older
-  commit can deploy it after a newer commit's deploy. Add an ancestry check
-  before adopting it for automatic deploys.
+- **A Worker's first deploy is a plain `wrangler deploy`.** The pipeline reads
+  the serving version before it changes anything, as its rollback target, and
+  refuses a deployments list it cannot read rather than treat it as a first
+  deploy. A Worker that has never been deployed has no list to read, so its
+  first version goes out once with `wrangler deploy`; every deploy after that
+  goes through the pipeline. The same holds for a new Durable Object class, as
+  [the constraint above](#constraint-introducing-a-new-durable-object-class)
+  describes.
+- **A relocation's pause budget bounds its hooks, not the pipeline's own
+  wrangler calls.** `DEPLOY_RELOCATION_MAX_PAUSE_SECONDS` stops a copy or
+  migrate hook that runs past it, and is checked between steps. A wrangler
+  call the pipeline makes inside the pause (a lock write or read-back, the
+  serving-version check) is not cut off, because a lock write cut off on the
+  client can still land on Cloudflare after recovery has read the lock, leaving
+  a lock nobody owns. Such a call ends when wrangler gives up, which stretches
+  the pause; the locks stay set throughout, so no write is lost.
 
 ## Versioning
 

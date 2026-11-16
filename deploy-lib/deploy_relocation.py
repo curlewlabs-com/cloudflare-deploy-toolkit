@@ -161,10 +161,6 @@ class Relocation:
         self._reporter.step(
             f"Read the relocation's source and target locks ({config.env})"
         )
-        if config.dry_run:
-            emit("[dry-run] source open, target absent: a relocation not yet started")
-            return
-
         source = self._source_lock.capture(
             "read the relocation source's deploy lock before mutating anything",
             deploy_lock.PRECHECK,
@@ -211,22 +207,21 @@ class Relocation:
             emit("")
             emit("> Source already fenced by an earlier run - nothing to lock.")
             return
-        if not self._config.dry_run:
-            # Read again, because the uploads since the first read took long
-            # enough for something else to take this lock. Locking over another
-            # holder would read back as locked, and this run would then believe
-            # the fence was its own to reopen.
-            again = self._source_lock.capture(
-                "confirm the relocation source is still open before fencing it",
-                deploy_lock.PRECHECK,
+        # Read again, because the uploads since the first read took long
+        # enough for something else to take this lock. Locking over another
+        # holder would read back as locked, and this run would then believe
+        # the fence was its own to reopen.
+        again = self._source_lock.capture(
+            "confirm the relocation source is still open before fencing it",
+            deploy_lock.PRECHECK,
+        )
+        if again != lock_state.UNLOCKED:
+            emit_error(
+                "[FAIL] The relocation source's lock changed since this run "
+                f"read it (now {again}). Something else holds it; this run "
+                "fenced nothing and reopens nothing."
             )
-            if again != lock_state.UNLOCKED:
-                emit_error(
-                    "[FAIL] The relocation source's lock changed since this run "
-                    f"read it (now {again}). Something else holds it; this run "
-                    "fenced nothing and reopens nothing."
-                )
-                raise DeployAbort(1)
+            raise DeployAbort(1)
         self._source.lock()
 
     def verify_still_closed(self) -> None:
@@ -243,9 +238,6 @@ class Relocation:
         self._reporter.step(
             f"Verify source and target are still locked before promoting ({config.env})"
         )
-        if config.dry_run:
-            emit("[dry-run] verify the source and the target still read locked")
-            return
         source = self._source_lock.capture(
             "confirm the relocation source is still fenced before the promotion",
             deploy_lock.LOCK,

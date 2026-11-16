@@ -246,8 +246,8 @@ class Recovery:
         ):
             return
         if not state.prev_version_id:
-            # A first-ever staging deploy under DEPLOY_ALLOW_STAGING_BOOTSTRAP
-            # has no previous version to send traffic back to. Nothing can be
+            # A staging deploy whose readable list showed nothing serving has
+            # no previous version to send traffic back to. Nothing can be
             # done automatically, so say so loudly enough for an operator to
             # finish it from the dashboard. The wording names no particular
             # version because every flag above reaches here: on the

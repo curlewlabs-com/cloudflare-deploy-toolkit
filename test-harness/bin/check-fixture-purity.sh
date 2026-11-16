@@ -33,10 +33,8 @@ set -eu
 # ggrep, and a hard stop without it. One pattern below is word-bounded with
 # `\b`, which POSIX ERE does not define: BSD grep reads it as a literal, the
 # scan then matches nothing, and THIS SCANNER REPORTS SUCCESS - the quiet leak
-# it exists to turn loud. Every scan pipes through `|| true`, so a missing
-# binary would otherwise look exactly like a clean fixture set. So the scan
-# requires the g-name and refuses to run without it rather than falling back to
-# whatever grep is on PATH.
+# it exists to turn loud. So the scan requires the g-name and refuses to run
+# without it rather than falling back to whatever grep is on PATH.
 if ! command -v ggrep >/dev/null 2>&1; then
     echo "ERROR: check-fixture-purity.sh needs ggrep (GNU grep)." >&2
     echo "  macOS: brew install grep; Linux: link ggrep to the system GNU grep" >&2
@@ -83,42 +81,86 @@ fail() {
     FAIL=$((FAIL + 1))
 }
 
-# Find all non-empty fixture files. Empty marker files (lock.txt, etc.) skip
-# scanning automatically since grep returns no matches on zero bytes - but
-# being explicit costs nothing and makes the test plan visible.
-FIXTURES=$(find "$FIXTURE_DIR" -type f \( -name '*.txt' -o -name '*.json' \) | sort)
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
-if [ -z "$FIXTURES" ]; then
+# The fixture list, one path per line, read back line by line so a path holding
+# a space or a tab stays one path. A newline inside a name cannot survive that,
+# so such a name is refused rather than scanned in pieces. A find that fails
+# fails the scan: an unread directory is not a clean one.
+NEWLINE_NAMES="$WORK/newline-names"
+if ! find "$FIXTURE_DIR" -type f -name '*
+*' >"$NEWLINE_NAMES"; then
+    echo "[FAIL] check-fixture-purity: could not list $FIXTURE_DIR" >&2
+    exit 1
+fi
+if [ -s "$NEWLINE_NAMES" ]; then
+    echo "[FAIL] check-fixture-purity: a fixture name holds a newline; rename it:" >&2
+    cat "$NEWLINE_NAMES" >&2
+    exit 1
+fi
+FIXTURES="$WORK/fixtures"
+if ! find "$FIXTURE_DIR" -type f \( -name '*.txt' -o -name '*.json' \) >"$WORK/found"; then
+    echo "[FAIL] check-fixture-purity: could not list $FIXTURE_DIR" >&2
+    exit 1
+fi
+sort "$WORK/found" >"$FIXTURES"
+
+if [ ! -s "$FIXTURES" ]; then
     echo "[FAIL] check-fixture-purity: no fixture files found in $FIXTURE_DIR" >&2
     exit 1
 fi
 
-echo "> scanning $(echo "$FIXTURES" | wc -l | tr -d ' ') fixture files in $FIXTURE_DIR"
+echo "> scanning $(wc -l <"$FIXTURES" | tr -d ' ') fixture files in $FIXTURE_DIR"
 echo ""
 
-# scan_pattern <pattern> <description>
-# Greps every fixture file for $pattern. If any matches found, fail with
-# the file and matching line for diagnosis. Patterns use ERE (-E).
-# We loop file-by-file rather than passing $FIXTURES through grep so the
-# word-split is explicit (each line is one path) and shellcheck-clean.
-scan_pattern() {
-    pattern="$1"
-    description="$2"
-    matched_files=""
-    for f in $FIXTURES; do
-        if grep -E -q -- "$pattern" "$f" 2>/dev/null; then
-            matched_files="$matched_files $f"
-        fi
-    done
-    if [ -n "$matched_files" ]; then
+# A grep's exit status is the verdict here, and only two of its values are
+# answers: 0 matched, 1 did not. Anything else (an unreadable file, a bad
+# pattern) is a scan that did not happen, and it fails the run rather than
+# passing as a clean file.
+unreadable() {
+    fail "could not scan $1 (grep exit $2)"
+}
+
+# scan_with <grep flags> <pattern> <description>
+# Fails with each matching file and line when any fixture matches.
+scan_with() {
+    flags="$1"
+    pattern="$2"
+    description="$3"
+    hits="$WORK/hits"
+    : >"$hits"
+    while IFS= read -r f; do
+        rc=0
+        grep "$flags" -n -- "$pattern" "$f" >"$WORK/lines" 2>/dev/null || rc=$?
+        case "$rc" in
+        0)
+            {
+                echo "      in $(basename "$f"):"
+                sed 's/^/        /' "$WORK/lines"
+            } >>"$hits"
+            ;;
+        1) ;;
+        *) unreadable "$f" "$rc" ;;
+        esac
+    done <"$FIXTURES"
+    if [ -s "$hits" ]; then
         fail "$description"
-        for f in $matched_files; do
-            echo "      in $(basename "$f"):" >&2
-            grep -E -n -- "$pattern" "$f" 2>/dev/null | sed 's/^/        /' >&2
-        done
+        cat "$hits" >&2
     else
         pass "$description"
     fi
+}
+
+# scan_pattern <pattern> <description>: ERE match.
+scan_pattern() {
+    scan_with -E "$1" "$2"
+}
+
+# scan_literal <literal> <description>: plain-string match, for consumer
+# literals where regex metacharacters might appear without intent.
+scan_literal() {
+    scan_with -F "$1" "$2"
 }
 
 # scan_pattern_excluding <pattern> <description> <allowlist regex>
@@ -128,41 +170,36 @@ scan_pattern_excluding() {
     pattern="$1"
     description="$2"
     allowlist="$3"
-    matches=""
-    for f in $FIXTURES; do
-        # ggrep, guarded at the top: `\b` below needs GNU semantics, and the
-        # `|| true` here would hide a missing binary as a clean scan.
-        file_matches=$(ggrep -E -o -- "$pattern" "$f" 2>/dev/null | ggrep -E -v -- "$allowlist" || true)
-        if [ -n "$file_matches" ]; then
-            matches="$matches\n  in $(basename "$f"):\n$(echo "$file_matches" | sed 's/^/    /')"
-        fi
-    done
-    if [ -n "$matches" ]; then
+    hits="$WORK/hits"
+    : >"$hits"
+    while IFS= read -r f; do
+        # ggrep, guarded at the top: `\b` below needs GNU semantics.
+        rc=0
+        ggrep -E -o -- "$pattern" "$f" >"$WORK/found-matches" 2>/dev/null || rc=$?
+        case "$rc" in
+        0) ;;
+        1) continue ;;
+        *)
+            unreadable "$f" "$rc"
+            continue
+            ;;
+        esac
+        rc=0
+        ggrep -E -v -- "$allowlist" "$WORK/found-matches" >"$WORK/kept" || rc=$?
+        case "$rc" in
+        0)
+            {
+                echo "  in $(basename "$f"):"
+                sed 's/^/    /' "$WORK/kept"
+            } | sed 's/^/      /' >>"$hits"
+            ;;
+        1) ;;
+        *) unreadable "$f" "$rc" ;;
+        esac
+    done <"$FIXTURES"
+    if [ -s "$hits" ]; then
         fail "$description"
-        printf '%b\n' "$matches" | sed 's/^/      /' >&2
-    else
-        pass "$description"
-    fi
-}
-
-# scan_literal <literal> <description>
-# Plain-string match (grep -F). Used for consumer-supplied forbidden literals
-# where regex metacharacters might appear without intent.
-scan_literal() {
-    literal="$1"
-    description="$2"
-    matched_files=""
-    for f in $FIXTURES; do
-        if grep -F -q -- "$literal" "$f" 2>/dev/null; then
-            matched_files="$matched_files $f"
-        fi
-    done
-    if [ -n "$matched_files" ]; then
-        fail "$description"
-        for f in $matched_files; do
-            echo "      in $(basename "$f"):" >&2
-            grep -F -n -- "$literal" "$f" 2>/dev/null | sed 's/^/        /' >&2
-        done
+        cat "$hits" >&2
     else
         pass "$description"
     fi

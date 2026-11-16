@@ -116,12 +116,6 @@ class Database:
     def lock(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Lock {self._role} ({config.env})")
-        if config.dry_run:
-            emit(f"[dry-run] Lock {self._role} ({config.env})")
-            state.lock_state = "locked"
-            state.unlock_required = True
-            return
-
         # The CREATE / INSERT OR IGNORE / UPDATE triple is idempotent, so
         # retrying a classified-transient failure converges on the same locked
         # row. If a retry still fails, the read-back below is what decides.
@@ -163,9 +157,6 @@ class Database:
         """
         config = self._config
         self._reporter.step("Drain in-flight requests")
-        if config.dry_run:
-            emit(f"[dry-run] sleep {config.drain_seconds}")
-            return
         emit(
             f"Waiting {config.drain_seconds} seconds for old isolate requests "
             "to complete..."
@@ -175,14 +166,6 @@ class Database:
     def save_bookmark(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Save D1 Time Travel bookmark ({config.env})")
-        if config.dry_run:
-            emit(
-                f"[dry-run] {self._wrangler_text()} d1 time-travel info "
-                f"{config.db_name} --json"
-            )
-            state.bookmark = "dry-run-bookmark"
-            return
-
         # A pure read, so retrying is always safe.
         result = self._runner.run(
             "bookmark_fetch",
@@ -227,14 +210,6 @@ class Database:
         """
         config, state = self._config, self._state
         self._reporter.step(f"Unlock {self._role} ({config.env})")
-        if config.dry_run:
-            emit(f"[dry-run] Unlock {self._role} ({config.env})")
-            state.lock_state = "unlocked"
-            state.unlock_required = False
-            state.unlock_result = "success"
-            self._reporter.end_steps()
-            return True
-
         # The UPDATE is idempotent, so retrying a classified-transient failure
         # is safe; if a retry still fails, the read-back below is what decides.
         result = self._execute("unlock_mutate", UNLOCK_SQL)
@@ -278,14 +253,6 @@ class Database:
             "Schema check or migration failed! Rolling back using bookmark: "
             f"{state.bookmark}"
         )
-        if config.dry_run:
-            emit(
-                f"[dry-run] {self._wrangler_text()} d1 time-travel restore "
-                f"{config.db_name} --bookmark={state.bookmark}"
-            )
-            state.d1_restore_result = "success"
-            return
-
         # Idempotent at a given bookmark, so retrying a classified-transient
         # failure converges on the same post-restore state.
         result = self._runner.run(

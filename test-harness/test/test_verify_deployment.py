@@ -7,9 +7,10 @@ optional live-SHA assertion. A regression here turns a successful deploy into a
 false-negative workflow failure, or lets a sibling deploy's fresh timestamp stand
 in for the build that was actually pushed.
 
-No network: VERIFY_DEPLOYMENT_RESPONSE and VERIFY_DEPLOYMENT_SHA_RESPONSE supply
-the status and SHA bodies, and VERIFY_DEPLOYMENT_NOW_EPOCH pins "now" so every age assertion
-is a fixed arithmetic fact rather than a clock read.
+No network: a fake `curl` first on the verifier's PATH answers the deployments
+read and the live-SHA read with the bodies a case hands it, and
+VERIFY_DEPLOYMENT_NOW_EPOCH pins "now" so every age assertion is a fixed
+arithmetic fact rather than a clock read.
 
 The parser cases below carry the property the verifier's safety rests on: a timestamp
 the verifier cannot read, or can only read by guessing a zone, fails closed
@@ -21,6 +22,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -35,6 +37,21 @@ from verify_deployment import (
 )
 
 SCRIPT = BIN_DIR / "verify_deployment.py"
+
+# Answers by URL: the Cloudflare deployments read, or any other URL as the live
+# endpoint. A body the case did not give is curl's refused-connection exit.
+FAKE_CURL = """#!/bin/sh
+for arg; do url=$arg; done
+case "$url" in
+*/deployments) body="$FAKE_CURL_DIR/deployments" ;;
+*) body="$FAKE_CURL_DIR/live_sha" ;;
+esac
+if [ ! -f "$body" ]; then
+    echo "curl: (7) Failed to connect" >&2
+    exit 7
+fi
+cat "$body"
+"""
 
 # 2026-04-22T22:33:00Z. Every timestamp below is placed relative to it, so the
 # age each case asserts is arithmetic rather than a reading of the host clock.
@@ -134,18 +151,35 @@ class VerifierRunner:
     """Shared invocation of the real executable, held off the TestCase so the
     timestamp and SHA suites can use it without inheriting each other's rows."""
 
-    def run_verifier(self, **overrides: str) -> subprocess.CompletedProcess[str]:
-        env = {
-            "PATH": os.environ["PATH"],
-            "CLOUDFLARE_API_TOKEN": "test-token",
-            "CLOUDFLARE_ACCOUNT_ID": "test-account",
-            "SCRIPT_NAME": "test-worker",
-            "VERIFY_DEPLOYMENT_NOW_EPOCH": NOW_EPOCH,
-        }
-        env.update(overrides)
-        return subprocess.run(
-            [str(SCRIPT)], env=env, capture_output=True, text=True, check=False
-        )
+    def run_verifier(
+        self,
+        deployments: str | None = None,
+        live_sha: str | None = None,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run the verifier with a fake curl answering each read: `deployments`
+        for the Cloudflare deployments list, `live_sha` for the live endpoint.
+        A read with no body given fails as curl does on a refused request."""
+        with tempfile.TemporaryDirectory() as fake:
+            fake_dir = Path(fake)
+            for name, body in (("deployments", deployments), ("live_sha", live_sha)):
+                if body is not None:
+                    (fake_dir / name).write_text(body)
+            curl = fake_dir / "curl"
+            curl.write_text(FAKE_CURL)
+            curl.chmod(0o755)
+            env = {
+                "PATH": f"{fake_dir}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_CURL_DIR": str(fake_dir),
+                "CLOUDFLARE_API_TOKEN": "test-token",
+                "CLOUDFLARE_ACCOUNT_ID": "test-account",
+                "SCRIPT_NAME": "test-worker",
+                "VERIFY_DEPLOYMENT_NOW_EPOCH": NOW_EPOCH,
+            }
+            env.update(overrides)
+            return subprocess.run(
+                [str(SCRIPT)], env=env, capture_output=True, text=True, check=False
+            )
 
 
 class TimestampGate(VerifierRunner, unittest.TestCase):
@@ -153,7 +187,7 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
     workflow-command rendering, and the age arithmetic live."""
 
     def test_fresh_deploy_passes(self) -> None:
-        done = self.run_verifier(VERIFY_DEPLOYMENT_RESPONSE=FRESH_RESPONSE)
+        done = self.run_verifier(deployments=FRESH_RESPONSE)
         self.assertEqual(done.returncode, 0, msg=done.stdout + done.stderr)
         self.assertIn(
             "Latest deployment for test-worker: 2026-04-22T22:32:00Z (60s ago)",
@@ -162,9 +196,7 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
 
     def test_malformed_timestamp_fails_explicitly(self) -> None:
         """API shape drift must be diagnosable, not silently arithmetic."""
-        done = self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=deployments("not-a-timestamp")
-        )
+        done = self.run_verifier(deployments=deployments("not-a-timestamp"))
         self.assertEqual(done.returncode, 1)
         self.assertIn(
             "Could not parse deployment timestamp: not-a-timestamp", done.stderr
@@ -173,9 +205,7 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
     def test_small_future_skew_is_tolerated(self) -> None:
         """Distributed clocks disagree by seconds; a good deploy must not fail
         for it."""
-        done = self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=deployments("2026-04-22T22:33:30Z")
-        )
+        done = self.run_verifier(deployments=deployments("2026-04-22T22:33:30Z"))
         self.assertEqual(done.returncode, 0, msg=done.stdout + done.stderr)
         self.assertIn("treating as clock skew", done.stdout)
         self.assertIn(
@@ -185,37 +215,39 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
 
     def test_large_future_skew_is_refused(self) -> None:
         """A timestamp this far ahead cannot belong to the deploy just run."""
-        done = self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=deployments("2026-04-22T22:34:30Z")
-        )
+        done = self.run_verifier(deployments=deployments("2026-04-22T22:34:30Z"))
         self.assertEqual(done.returncode, 1)
         self.assertIn("Latest deployment timestamp is 90s in the future", done.stdout)
 
     def test_stale_deployment_is_refused(self) -> None:
-        done = self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=deployments("2026-04-22T22:20:00Z")
-        )
+        done = self.run_verifier(deployments=deployments("2026-04-22T22:20:00Z"))
         self.assertEqual(done.returncode, 1)
         self.assertIn("Latest deployment is 780s old", done.stdout)
 
     def test_a_non_numeric_knob_is_refused_rather_than_defaulted(self) -> None:
-        """Falling back to the default would run the freshness check under a
-        window the operator did not ask for and did not know was ignored."""
+        """Falling back to the default would run the check under a schedule the
+        operator did not ask for and did not know was ignored."""
         done = self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=FRESH_RESPONSE,
-            VERIFY_DEPLOYMENT_MAX_AGE_SECONDS="five minutes",
+            deployments=FRESH_RESPONSE,
+            VERIFY_DEPLOYMENT_EXPECTED_SHA="abc",
+            VERIFY_DEPLOYMENT_SHA_URL="https://example.test/v1/health",
+            VERIFY_DEPLOYMENT_SHA_ATTEMPTS="twice",
         )
         self.assertEqual(done.returncode, 1)
-        self.assertIn(
-            "VERIFY_DEPLOYMENT_MAX_AGE_SECONDS must be an integer", done.stderr
-        )
+        self.assertIn("VERIFY_DEPLOYMENT_SHA_ATTEMPTS must be an integer", done.stderr)
+
+    def test_a_failed_deployments_read_says_why(self) -> None:
+        """A failed read used to exit with curl's status and nothing else, which
+        leaves an operator nothing to go on for an auth or HTTP failure."""
+        done = self.run_verifier()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("Could not read the deployments of test-worker", done.stderr)
+        self.assertIn("curl: (7) Failed to connect", done.stderr)
 
     def test_missing_required_env_is_named(self) -> None:
         for missing in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "SCRIPT_NAME"):
             with self.subTest(missing=missing):
-                done = self.run_verifier(
-                    VERIFY_DEPLOYMENT_RESPONSE=FRESH_RESPONSE, **{missing: ""}
-                )
+                done = self.run_verifier(deployments=FRESH_RESPONSE, **{missing: ""})
                 self.assertEqual(done.returncode, 1)
                 self.assertIn(f"::error::{missing} is required", done.stderr)
 
@@ -228,10 +260,10 @@ class LiveShaAssertion(VerifierRunner, unittest.TestCase):
         self, expected: str, body: str, attempts: str = "2", **overrides: str
     ) -> subprocess.CompletedProcess[str]:
         return self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=FRESH_RESPONSE,
+            deployments=FRESH_RESPONSE,
             VERIFY_DEPLOYMENT_EXPECTED_SHA=expected,
             VERIFY_DEPLOYMENT_SHA_URL="https://example.test/v1/health",
-            VERIFY_DEPLOYMENT_SHA_RESPONSE=body,
+            live_sha=body,
             VERIFY_DEPLOYMENT_SHA_ATTEMPTS=attempts,
             VERIFY_DEPLOYMENT_SHA_INTERVAL_SECONDS="0",
             **overrides,
@@ -291,7 +323,7 @@ class LiveShaAssertion(VerifierRunner, unittest.TestCase):
         """Silently skipping the liveness assertion would leave the workflow
         green while checking nothing it asked for."""
         done = self.run_verifier(
-            VERIFY_DEPLOYMENT_RESPONSE=FRESH_RESPONSE,
+            deployments=FRESH_RESPONSE,
             VERIFY_DEPLOYMENT_EXPECTED_SHA="abc1234",
         )
         self.assertEqual(done.returncode, 1)
@@ -299,7 +331,7 @@ class LiveShaAssertion(VerifierRunner, unittest.TestCase):
 
     def test_opting_out_leaves_timestamp_only_behavior_untouched(self) -> None:
         """A deploy with no SHA-bearing endpoint must be unaffected."""
-        done = self.run_verifier(VERIFY_DEPLOYMENT_RESPONSE=FRESH_RESPONSE)
+        done = self.run_verifier(deployments=FRESH_RESPONSE)
         self.assertEqual(done.returncode, 0, msg=done.stdout + done.stderr)
         self.assertIn("Latest deployment for test-worker", done.stdout)
         self.assertNotIn("expected SHA", done.stdout)

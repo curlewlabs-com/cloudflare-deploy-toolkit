@@ -230,6 +230,20 @@ jobs:
             fi
           fi
 
+          # An automatic deploy never moves the environment backwards. Runs
+          # are serialized by concurrency, which orders them by when they
+          # start, not by commit: CI for a newer commit can finish first and
+          # deploy, and the older commit's later CI completion would then find
+          # differences and deploy it over the newer one. A commit the anchor
+          # already contains is skipped; going back is the manual path.
+          if [ "${{ github.event_name }}" = "workflow_run" ] && \
+              [ "$(git rev-parse HEAD)" != "$LAST_SHA" ] && \
+              git merge-base --is-ancestor HEAD "$LAST_SHA"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "HEAD $(git rev-parse HEAD) is behind the deployed $LAST_SHA - not deploying backwards."
+            exit 0
+          fi
+
           # Name the anchor and HEAD ends of the comparison. The verdict lines below print the
           # anchor but not HEAD, and HEAD is the end a reader gets wrong: this
           # job checks out the commit CI validated, while the head SHA the
