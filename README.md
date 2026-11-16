@@ -358,6 +358,10 @@ moving a pin. Pin a consumer to a tag or a commit, never to `main`.
 It runs shellcheck over every shell script, the Bats suites, the Python suites,
 and the same run again from a vendored copy of the tree.
 
+After a bump of CI's shellcheck or bats version,
+`python3 tools/refresh_test_tools.py` rewrites the digests CI checks those
+archives against.
+
 ## License
 
 MIT - see [LICENSE](LICENSE).
