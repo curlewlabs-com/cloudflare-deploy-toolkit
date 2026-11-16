@@ -103,6 +103,31 @@ sanitize_input() {
 }
 
 # ----------------------------------------------------------------------
+# Current wrangler prints a binding unquoted, `env.NAME (value)`, and colors the
+# name and the value separately. The scrub used to run before the ANSI strip
+# and to match only the quoted form, so both of these passed the value
+# through into a fixture.
+# ----------------------------------------------------------------------
+@test "scrub-binding redacts the unquoted form wrangler prints now" {
+  input='env.EXAMPLE_BINDING_NAME (FAKE_TEST_BINDING_VALUE_DO_NOT_USE)      Environment Variable
+--dry-run: exiting now.'
+  run sanitize_input "$input" upload-maint --scrub-binding EXAMPLE_BINDING_NAME
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'env.EXAMPLE_BINDING_NAME (REDACTED)'* ]]
+  [[ "$output" != *"FAKE_TEST_BINDING_VALUE_DO_NOT_USE"* ]]
+}
+
+@test "scrub-binding redacts a value wrangler colored" {
+  esc=$(printf '\033')
+  input="${esc}[37menv.EXAMPLE_BINDING_NAME${esc}[39m (${esc}[2mFAKE_TEST_BINDING_VALUE_DO_NOT_USE${esc}[22m)
+--dry-run: exiting now."
+  run sanitize_input "$input" upload-maint --scrub-binding EXAMPLE_BINDING_NAME
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'env.EXAMPLE_BINDING_NAME (REDACTED)'* ]]
+  [[ "$output" != *"FAKE_TEST_BINDING_VALUE_DO_NOT_USE"* ]]
+}
+
+# ----------------------------------------------------------------------
 # Defense against making the sanitizer too aggressive: with no flag, the
 # binding value passes through unchanged. The consumer is responsible for
 # listing the bindings they want scrubbed.
