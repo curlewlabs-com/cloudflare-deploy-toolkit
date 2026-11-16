@@ -356,13 +356,6 @@ argument:
 Each hook receives the env name (`staging` or `production`) as its last
 argument. Hooks exit or `return` non-zero to fail the deploy.
 
-In `--dry-run` mode the pipeline calls none of the hooks - it prints what it
-would have run instead. This means dry-run validation does not require live
-credentials, a connected D1 database, or any other side-effect. If you need a
-hook that has its own internal dry-run mode (e.g. a schema linter that's
-read-only), call it unconditionally from the wrapper instead of wiring it as a
-hook.
-
 ### Optional env var overrides
 
 - **`DEPLOY_PIPELINE_MODE`** - `windowed`: Which body runs: `windowed`
@@ -402,11 +395,6 @@ hook.
   worst-case runtime for anything that writes the database - requests,
   scheduled invocations and `waitUntil` tasks - or guard each write in its own
   SQL; `worker-patterns/README.md` owns that checklist.
-- **`DEPLOY_ALLOW_STAGING_BOOTSTRAP`** - (unset): If set to `true`, allows a
-  staging deploy to proceed when `wrangler deployments list` fails (i.e. truly
-  the first deploy ever). Required because otherwise a transient wrangler
-  auth/network failure would silently disable Layer 2 recovery for the rest of
-  the run. Production never honors this flag.
 - **`DEPLOY_VERIFY_BACKOFF_SECONDS`** - `1 2 4 8`: Space-separated backoff
   schedule for `_deploy_lock` read-back verification after preflight/lock/unlock
   reads.
@@ -459,7 +447,7 @@ does not reach its first wait until the maintenance version is already serving.
 ### Entry point
 
 ```sh
-safe_deploy_pipeline.py <staging|production> [--sha SHA] [--expected-serving-sha SHA] [--dry-run]
+safe_deploy_pipeline.py <staging|production> [--sha SHA] [--expected-serving-sha SHA]
 ```
 
 Runs the full sequence, including the exit path. The consumer wrapper passes
@@ -472,9 +460,8 @@ message (`wrangler versions view`) and aborts, before any mutation, unless it is
 a final upload whose `commit=` is exactly this commit. A rollback from the
 dashboard makes an older version serve, and that version's immutable message
 still names the older commit. A version uploaded without `DEPLOY_COMMIT_SHA`
-names no commit, and the capture aborts on it. It is refused together with
-`DEPLOY_ALLOW_STAGING_BOOTSTRAP`, and a readable list with nothing serving
-aborts too. It is an argument, not a variable, so that a caller running a
+names no commit, and the capture aborts on it. A readable list with nothing
+serving aborts too. It is an argument, not a variable, so that a caller running a
 checkout whose pipeline predates it gets an unknown-argument refusal rather than
 a deploy that ignored it.
 

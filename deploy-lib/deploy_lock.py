@@ -63,13 +63,11 @@ class LockReader:
         db_name: str,
         wrangler_env: str,
         verify_backoff: Sequence[int],
-        dry_run: bool,
     ) -> None:
         self._wrangler = tuple(wrangler)
         self._db_name = db_name
         self._wrangler_env = wrangler_env
         self._verify_backoff = tuple(verify_backoff)
-        self._dry_run = dry_run
         self.last_error = ""
         self.records: dict[str, LockPhaseRecord] = {
             PRECHECK: LockPhaseRecord(),
@@ -107,10 +105,6 @@ class LockReader:
     def _read_with_retry(self, context: str) -> str:
         self.last_context = context
         self.last = LockPhaseRecord(result="in_progress")
-
-        if self._dry_run:
-            self.last = LockPhaseRecord(result="success", attempts=1, state="unlocked")
-            return "unlocked"
 
         schedule = list(self._verify_backoff)
         attempt = 1

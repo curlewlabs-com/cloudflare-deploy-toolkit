@@ -63,9 +63,9 @@ import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-DEFAULT_API_BASE = "https://api.cloudflare.com/client/v4"
-DEFAULT_MAX_AGE_SECONDS = 300
-DEFAULT_MAX_FUTURE_SKEW_SECONDS = 60
+API_BASE = "https://api.cloudflare.com/client/v4"
+MAX_AGE_SECONDS = 300
+MAX_FUTURE_SKEW_SECONDS = 60
 DEFAULT_SHA_JQ = ".sha"
 DEFAULT_SHA_ATTEMPTS = 6
 DEFAULT_SHA_INTERVAL_SECONDS = 5
@@ -142,13 +142,8 @@ def latest_deploy_timestamp(document: str, script_name: str) -> str:
 
 
 def _fetch_deployments(env: Mapping[str, str]) -> str:
-    canned = env.get("VERIFY_DEPLOYMENT_RESPONSE", "")
-    if canned:
-        return canned
-
-    api_base = env.get("VERIFY_DEPLOYMENT_API_BASE") or DEFAULT_API_BASE
     url = (
-        f"{api_base}/accounts/{env['CLOUDFLARE_ACCOUNT_ID']}"
+        f"{API_BASE}/accounts/{env['CLOUDFLARE_ACCOUNT_ID']}"
         f"/workers/scripts/{env['SCRIPT_NAME']}/deployments"
     )
     # An idempotent read, so a re-issue is safe; a definitive 4xx still fails
@@ -175,10 +170,6 @@ def _fetch_deployments(env: Mapping[str, str]) -> str:
 
 
 def _fetch_live_sha_body(env: Mapping[str, str], url: str, header: str) -> str:
-    canned = env.get("VERIFY_DEPLOYMENT_SHA_RESPONSE", "")
-    if canned:
-        return canned
-
     # No -f: a non-2xx body (a bot-challenge page, a 429) is captured for the
     # mismatch diagnostic rather than collapsing to an opaque empty string. -sS
     # stays quiet on success but surfaces transport errors.
@@ -261,15 +252,6 @@ def run(env: Mapping[str, str]) -> None:
             raise VerifyFailure(f"::error::{name} is required", to_stderr=True)
 
     script_name = env["SCRIPT_NAME"]
-    max_age = _int_env(
-        env, "VERIFY_DEPLOYMENT_MAX_AGE_SECONDS", DEFAULT_MAX_AGE_SECONDS
-    )
-    max_future_skew = _int_env(
-        env,
-        "VERIFY_DEPLOYMENT_MAX_FUTURE_SKEW_SECONDS",
-        DEFAULT_MAX_FUTURE_SKEW_SECONDS,
-    )
-
     latest_deploy = latest_deploy_timestamp(_fetch_deployments(env), script_name)
     deploy_epoch = parse_deploy_epoch(latest_deploy)
     now_epoch = _int_env(env, "VERIFY_DEPLOYMENT_NOW_EPOCH", int(time.time()))
@@ -277,7 +259,7 @@ def run(env: Mapping[str, str]) -> None:
 
     if age_seconds < 0:
         future_seconds = -age_seconds
-        if future_seconds > max_future_skew:
+        if future_seconds > MAX_FUTURE_SKEW_SECONDS:
             raise VerifyFailure(
                 f"::error::Latest deployment timestamp is {future_seconds}s in the future"
             )
@@ -289,7 +271,7 @@ def run(env: Mapping[str, str]) -> None:
 
     print(f"Latest deployment for {script_name}: {latest_deploy} ({age_seconds}s ago)")
 
-    if age_seconds > max_age:
+    if age_seconds > MAX_AGE_SECONDS:
         raise VerifyFailure(
             f"::error::Latest deployment is {age_seconds}s old - expected a deployment"
             " within the last 5 minutes"

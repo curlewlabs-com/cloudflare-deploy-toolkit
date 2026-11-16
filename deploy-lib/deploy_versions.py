@@ -111,38 +111,24 @@ class WorkerVersions:
     def capture_previous_version_id(self) -> None:
         """Record the rollback target the recovery path will use.
 
-        Production refuses to deploy without one. Staging tolerates an empty
-        result ONLY under DEPLOY_ALLOW_STAGING_BOOTSTRAP, because otherwise a
-        transient wrangler auth or network failure would be silently read as a
-        first-ever deploy and disable the Worker rollback for the rest of the
-        run. Bootstrap is a one-time action and deserves an explicit opt-in.
+        A list that cannot be read refuses the deploy in either environment: a
+        transient wrangler auth or network failure read as a first-ever deploy
+        would disable the Worker rollback for the rest of the run. A Worker's
+        first deploy, which has no list to read, goes out once as a plain
+        `wrangler deploy` (the README's Limits).
         """
         config, state = self._config, self._state
         self._reporter.step(f"Capture previous version ID ({config.env})")
-        if config.dry_run:
-            state.prev_version_id = "dry-run-prev-id"
-            emit(f"[dry-run] Previous version: {state.prev_version_id}")
-            return
-
         result = self._deployments_list()
         if not result.ok:
             emit_error(
                 "[FAIL] Could not list deployments (see stderr above for "
                 "wrangler output)"
             )
-            if config.is_production:
-                raise DeployAbort(1)
-            if config.allow_staging_bootstrap:
-                state.prev_version_id = ""
-                emit(
-                    "Previous version: <none - staging bootstrap "
-                    "(DEPLOY_ALLOW_STAGING_BOOTSTRAP=true)>"
-                )
-                return
             emit_error(
-                "[FAIL] Refusing to silently treat this as a bootstrap. If this "
-                "is genuinely the first deploy ever to staging, re-run with "
-                "DEPLOY_ALLOW_STAGING_BOOTSTRAP=true."
+                "[FAIL] Refusing to treat an unreadable deployments list as a "
+                "first deploy. A Worker's first deploy goes out once as a plain "
+                "`wrangler deploy`."
             )
             raise DeployAbort(1)
 
@@ -185,12 +171,6 @@ class WorkerVersions:
         """
         config, state = self._config, self._state
         self._reporter.step(f"Single-version preflight ({config.env})")
-        if config.dry_run:
-            state.prev_version_id = "dry-run-prev-id"
-            state.serving_version_id = "dry-run-prev-id"
-            emit(f"[dry-run] Serving version: {state.serving_version_id}")
-            return
-
         result = self._deployments_list()
         if not result.ok:
             emit_error(
@@ -220,10 +200,6 @@ class WorkerVersions:
         self._reporter.step(
             f"Re-verify single serving version {context} ({config.env})"
         )
-        if config.dry_run:
-            emit(f"[dry-run] verify serving version still {state.serving_version_id}")
-            return
-
         result = self._deployments_list()
         if not result.ok:
             emit_error(
@@ -257,10 +233,6 @@ class WorkerVersions:
     def upload_maintenance_version(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Upload maintenance-mode version ({config.env})")
-        if config.dry_run:
-            state.new_maint_id = "dry-run-maint-id"
-            emit(f"[dry-run] Uploaded maintenance version: {state.new_maint_id}")
-            return
         state.new_maint_id = self._upload_version(
             version_message.MAINTENANCE, ["--var", "MAINTENANCE_MODE:true"]
         )
@@ -270,10 +242,6 @@ class WorkerVersions:
     def upload_final_version(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Upload final version ({config.env})")
-        if config.dry_run:
-            state.new_final_id = "dry-run-final-id"
-            emit(f"[dry-run] Uploaded final version: {state.new_final_id}")
-            return
         state.new_final_id = self._upload_version(version_message.FINAL, [])
         emit(f"New final version: {state.new_final_id}")
         self._reporter.summary(f"| Final version | `{state.new_final_id}` |")
@@ -317,10 +285,6 @@ class WorkerVersions:
         if expected is None:
             return
         self._reporter.step(f"Verify the uploaded version's runtime ({config.env})")
-        if config.dry_run:
-            emit(f"[dry-run] verify {version_id} runs at {expected.describe()}")
-            return
-
         document = view_version(
             self._runner, config.wrangler_env, version_id, just_uploaded=True
         )
@@ -367,12 +331,6 @@ class WorkerVersions:
         """
         config = self._config
         self._reporter.step(f"Update triggers ({config.env})")
-        if config.dry_run:
-            emit(
-                f"[dry-run] {self._wrangler_text()} triggers deploy --env "
-                f"{config.wrangler_env}"
-            )
-            return
         self._require(
             "triggers_deploy", ["triggers", "deploy", "--env", config.wrangler_env]
         )
@@ -380,13 +338,6 @@ class WorkerVersions:
     def promote_maintenance_version(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Promote maintenance version to 100% ({config.env})")
-        if config.dry_run:
-            emit(
-                f"[dry-run] {self._wrangler_text()} versions deploy "
-                f"{state.new_maint_id}@100% --yes"
-            )
-            state.maint_live = True
-            return
         # Marked in flight BEFORE the call, the same way the final promote is
         # and for the same reason (see the flag's declaration in
         # deploy_state.py). Rollback to a pinned version is idempotent, so a
@@ -415,13 +366,6 @@ class WorkerVersions:
     def promote_final_version(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Promote final version to 100% ({config.env})")
-        if config.dry_run:
-            emit(
-                f"[dry-run] {self._wrangler_text()} versions deploy "
-                f"{state.new_final_id}@100% --yes"
-            )
-            state.maint_live = False
-            return
         # Marked in flight BEFORE the call, unlike the maintenance promote:
         # `versions deploy @100%` can apply server-side and still return
         # non-zero after retries. On the windowless body maint_live is never
@@ -460,10 +404,6 @@ class WorkerVersions:
         """
         config, state = self._config, self._state
         self._reporter.step(f"Verify the final version is what serves ({config.env})")
-        if config.dry_run:
-            emit(f"[dry-run] verify {state.new_final_id} is the single serving version")
-            return
-
         result = self._deployments_list()
         if not result.ok:
             emit_error(

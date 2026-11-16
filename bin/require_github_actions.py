@@ -62,7 +62,7 @@ def decide(argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, list[str]]
     return 1, [
         f"[FAIL] require-github-actions: {op} changes the deployed service and must run in GitHub Actions, not from a local checkout.",
         "  Run it via its GitHub Actions workflow. If it has none, or CI is down and this is a genuine emergency, export a",
-        '  write-capable token and set ALLOW_LOCAL_DEPLOY=1.',
+        "  write-capable token and set ALLOW_LOCAL_DEPLOY=1.",
     ]
 
 

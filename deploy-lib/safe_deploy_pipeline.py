@@ -371,9 +371,6 @@ class Pipeline:
         (_run_until), which every other hook has none of.
         """
         argv = [*command, self._config.env]
-        if self._config.dry_run:
-            emit(f"[dry-run] {' '.join(argv)}")
-            return 0
         deadline = self._relocation.pause_deadline if self._relocation else None
         if fenced and deadline is not None:
             return _run_until(argv, deadline)
@@ -597,7 +594,6 @@ def build(
         db_name=config.db_name,
         wrangler_env=config.wrangler_env,
         verify_backoff=config.verify_backoff,
-        dry_run=config.dry_run,
     )
     diagnostics = deploy_diagnostics.Diagnostics(
         config.diagnostics_dir, reporter=reporter
@@ -663,7 +659,6 @@ def _relocation(
         db_name=config.relocation_source_db,
         wrangler_env=config.wrangler_env,
         verify_backoff=config.verify_backoff,
-        dry_run=config.dry_run,
     )
     source = deploy_database.Database(
         source_config,
@@ -686,7 +681,7 @@ def _relocation(
 
 
 def main(argv: Sequence[str]) -> int:
-    """`safe_deploy_pipeline.py <staging|production> [--sha SHA] [--dry-run]`."""
+    """`safe_deploy_pipeline.py <staging|production> [--sha SHA] [--expected-serving-sha SHA]`."""
     # Before anything can print: every line below carries text that may have come
     # from the API, and a stdout that refuses it aborts the deploy.
     deploy_reporting.configure_stdout()

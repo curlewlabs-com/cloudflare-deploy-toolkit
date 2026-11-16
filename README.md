@@ -306,6 +306,17 @@ new-migration constraint clearly enough at deploy time ("Uploading a version
 with Durable Object migrations is not supported") that an additional guard would
 only over-reject already-applied tags.
 
+## Limits
+
+- **A Worker's first deploy is a plain `wrangler deploy`.** The pipeline reads
+  the serving version before it changes anything, as its rollback target, and
+  refuses a deployments list it cannot read rather than treat it as a first
+  deploy. A Worker that has never been deployed has no list to read, so its
+  first version goes out once with `wrangler deploy`; every deploy after that
+  goes through the pipeline. The same holds for a new Durable Object class, as
+  [the constraint above](#constraint-introducing-a-new-durable-object-class)
+  describes.
+
 ## Known issues
 
 These are open and tracked in this repository's issues:

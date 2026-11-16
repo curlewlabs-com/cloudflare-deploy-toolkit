@@ -77,31 +77,14 @@
 #                      <database>'s lock state becomes <state> (needs
 #                      MOCK_PER_DB_LOCK_STATE). Stands in for another actor
 #                      taking a lock while a deploy is part-way through.
-#   MOCK_SCHEMA_FILE - current schema snapshot; when set, schema-state reads
-#                      replay the consumer's real schema instead of an empty DB
-#   MOCK_DATA_SEED_FILE - current lookup-row snapshot; when set, the
-#                      consumer-specific lookup replays below (push_kind_types,
-#                      privacy_policy_versions) read the consumer's real rows
-#   MOCK_SCHEMA_VERSION_FILE - current target schema version; when set,
-#                      _schema_meta reads replay the consumer's expected row
-#   MOCK_SCHEMA_STATE_MODE - if set to empty_after_apply, schema-state reads
-#                      return the current snapshot until schema_apply_lock runs,
-#                      then switch to an empty DB for postflight testing
 #
 # Steps the mock recognizes (these are the names that go in MOCK_FAIL_AT
 # and the basenames of fixture files):
-#   deployments_list, versions_view, upload_maint, upload_final, triggers, promote_maint,
-#   promote_final, schema_state, push_kind_state, schema_version_state,
-#   privacy_policy_state, device_config_sentinel_state, lock,
-#   lock_state, unlock, bookmark, tt_restore, wrangler_rollback,
-#   schema_apply_lock, schema_seed, floor_state, floor_stamp
-#
-# floor_state / floor_stamp mirror the lock_state pattern for the consumer's
-# `_rollback_floor` row (rollback-floor.sh): reads replay a stateful
-# floor-generation value (initial value from MOCK_INITIAL_FLOOR_STATE,
-# default 0) and the stamp UPDATE stores the new value, so a consumer whose
-# repo-declared floor is ahead of the recorded one still passes its
-# stamp read-back against the mock.
+#   deployments_list, versions_view, upload_maint, upload_final, triggers,
+#   promote_maint, promote_final, lock, lock_state, unlock, bookmark,
+#   tt_restore, wrangler_rollback - the calls the pipeline itself makes. A
+#   consumer's own hook queries are its own to stub; anything else is `other`
+#   and emits nothing.
 #
 # Why this mock and not bats-mock: bats-mock provides PATH-injection and call
 # recording, but does not handle fixture-file replay or named-step failure
@@ -128,7 +111,7 @@ if [ ! -d "$FIXTURE_DIR" ]; then
     exit 99
 fi
 
-LOCK_STATE_FILE="${MOCK_LOCK_STATE_FILE:-$MOCK_LOG_FILE.lock_state}"
+LOCK_STATE_FILE="$MOCK_LOG_FILE.lock_state"
 if [ "${MOCK_PER_DB_LOCK_STATE:-}" = "1" ] && [ "${1:-} ${2:-}" = "d1 execute" ] && [ -n "${3:-}" ]; then
     LOCK_STATE_FILE="$LOCK_STATE_FILE.$3"
 fi
@@ -137,170 +120,6 @@ if [ ! -f "$LOCK_STATE_FILE" ]; then
 fi
 LOCK_STATE=$(cat "$LOCK_STATE_FILE")
 PROMOTED_FILE="$MOCK_LOG_FILE.promoted"
-SCHEMA_STATE_FILE="${MOCK_SCHEMA_STATE_FILE:-$MOCK_LOG_FILE.schema_state}"
-if [ ! -f "$SCHEMA_STATE_FILE" ]; then
-    printf '%s\n' "current" >"$SCHEMA_STATE_FILE"
-fi
-SCHEMA_STATE=$(cat "$SCHEMA_STATE_FILE")
-FLOOR_STATE_FILE="${MOCK_FLOOR_STATE_FILE:-$MOCK_LOG_FILE.floor_state}"
-if [ ! -f "$FLOOR_STATE_FILE" ]; then
-    printf '%s\n' "${MOCK_INITIAL_FLOOR_STATE:-0}" >"$FLOOR_STATE_FILE"
-fi
-
-schema_results() {
-    if [ "${MOCK_SCHEMA_STATE_MODE:-}" = "empty_after_apply" ] && [ "$SCHEMA_STATE" = "empty" ]; then
-        printf '%s\n' '[{"results":[]}]'
-        return
-    fi
-
-    if [ -n "${MOCK_SCHEMA_FILE:-}" ]; then
-        # Mirror sqlite_master's actual behavior: the CREATE statements it
-        # returns carry no SQL comments AND no DML (INSERT/UPDATE/DELETE).
-        # Strip comment-only physical lines (`^\s*--...`) before collapsing
-        # newlines. The physical-line anchor means `DEFAULT '--ok'` is never
-        # mistaken for a comment even after the subsequent whitespace
-        # collapse - naive `--[^\n]*` would corrupt any valid DDL whose
-        # string literal contains the SQL comment delimiter `--`. Then keep only CREATE
-        # statements: consumer schema files may carry small required
-        # seed-row INSERT OR IGNORE statements next to their CREATE TABLE
-        # (a configuration sentinel row, say), and
-        # `sqlite_master` never returns those, so the mock must drop them too
-        # or callers see false DDL drift.
-        jq -Rs '
-      split(";")
-      | map(
-          gsub("(^|\n)[ \t]*--[^\n]*"; "")
-          | gsub("[\\r\\n]+"; " ")
-          | gsub("  +"; " ")
-          | select(test("\\S"))
-          | select(test("^[ \t]*create[ \t]"; "i"))
-          | {sql: .}
-        )
-      | {results: .}
-      | [.]
-    ' "$MOCK_SCHEMA_FILE"
-        return
-    fi
-
-    if [ -f "$FIXTURE_DIR/schema_state.json" ]; then
-        cat "$FIXTURE_DIR/schema_state.json"
-        return
-    fi
-
-    printf '%s\n' '[{"results":[]}]'
-}
-
-push_kind_results() {
-    if [ -n "${MOCK_DATA_SEED_FILE:-}" ]; then
-        sed -n "/INSERT OR IGNORE INTO push_kind_types/,/;/p" "$MOCK_DATA_SEED_FILE" |
-            tr '\n' ' ' |
-            grep -Eo "\\([[:space:]]*[0-9]+,[[:space:]]*'[^']+'[[:space:]]*\\)" |
-            awk '
-          BEGIN { printf "[" }
-          {
-            gsub(/[()]/, "", $0)
-            split($0, fields, ",")
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", fields[1])
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", fields[2])
-            gsub(/^'\''|'\''$/, "", fields[2])
-            if (NR > 1) printf ","
-            printf "{\"id\":%s,\"name\":\"%s\"}", fields[1], fields[2]
-          }
-          END { printf "]" }
-        ' |
-            jq -c '{results: .} | [.]'
-        return
-    fi
-
-    if [ -f "$FIXTURE_DIR/push_kind_state.json" ]; then
-        cat "$FIXTURE_DIR/push_kind_state.json"
-        return
-    fi
-
-    printf '%s\n' '[{"results":[]}]'
-}
-
-schema_version_results() {
-    if [ -n "${MOCK_SCHEMA_VERSION_FILE:-}" ]; then
-        target_version=$(tr -d '[:space:]' <"$MOCK_SCHEMA_VERSION_FILE")
-        printf '[{"results":[{"id":1,"version":%s}]}]\n' "$target_version"
-        return
-    fi
-
-    printf '%s\n' '[{"results":[{"id":1,"version":1}]}]'
-}
-
-# Consumer-specific lookup-row replay for tables the consumer's deploy converges
-# from a data-seed file on every run rather than through a version-gated delta.
-# Parses INSERT OR IGNORE rows out of MOCK_DATA_SEED_FILE; falls back to a
-# static fixture when it is unset. Currently covers a
-# privacy_policy_versions table - postflight-verified by check-schema-live.sh, so a
-# silent empty here cascades into "deploy aborted at postflight" in consumers
-# that run a real check-schema-live.sh.
-privacy_policy_results() {
-    if [ -n "${MOCK_DATA_SEED_FILE:-}" ]; then
-        # Data-seed shape: INSERT OR IGNORE INTO privacy_policy_versions
-        # (id, effective_at, version) VALUES (id_int, effective_at_int,
-        # 'version_str'). The verifier in check-schema-live.sh reads only
-        # effective_at and version, so the projection drops id.
-        sed -n "/INSERT OR IGNORE INTO privacy_policy_versions/,/;/p" "$MOCK_DATA_SEED_FILE" |
-            tr '\n' ' ' |
-            grep -Eo "\\([[:space:]]*[0-9]+[[:space:]]*,[[:space:]]*[0-9]+[[:space:]]*,[[:space:]]*'[^']+'[[:space:]]*\\)" |
-            awk '
-          BEGIN { printf "[" }
-          {
-            gsub(/[()]/, "", $0)
-            split($0, fields, ",")
-            for (i = 1; i <= 3; i++) {
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", fields[i])
-            }
-            gsub(/^'\''|'\''$/, "", fields[3])
-            if (NR > 1) printf ","
-            printf "{\"effective_at\":%s,\"version\":\"%s\"}", fields[2], fields[3]
-          }
-          END { printf "]" }
-        ' |
-            jq -c '{results: .} | [.]'
-        return
-    fi
-
-    if [ -f "$FIXTURE_DIR/privacy_policy_state.json" ]; then
-        cat "$FIXTURE_DIR/privacy_policy_state.json"
-        return
-    fi
-
-    printf '%s\n' '[{"results":[]}]'
-}
-
-device_config_sentinel_results() {
-    # The sentinel row's existence (count = 1) is the contract; the
-    # consumer's INSERT OR IGNORE in schema.sql guarantees one row. Emit
-    # the canonical "count = 1" response when MOCK_SCHEMA_FILE is set.
-    if [ -n "${MOCK_SCHEMA_FILE:-}" ]; then
-        if grep -q "INSERT OR IGNORE INTO device_configuration" "$MOCK_SCHEMA_FILE"; then
-            printf '%s\n' '[{"results":[{"c":1}]}]'
-            return
-        fi
-    fi
-
-    if [ -f "$FIXTURE_DIR/device_config_sentinel_state.json" ]; then
-        cat "$FIXTURE_DIR/device_config_sentinel_state.json"
-        return
-    fi
-
-    printf '%s\n' '[{"results":[{"c":0}]}]'
-}
-
-FILE_ARG=""
-prev=""
-for arg in "$@"; do
-    if [ "$prev" = "--file" ]; then
-        FILE_ARG="$arg"
-        break
-    fi
-    prev="$arg"
-done
-
 # Classify the invocation by inspecting all args. The classification is
 # generic - it matches against wrangler subcommand patterns rather than any
 # consumer-specific naming. The slot UUIDs (11111111 / 22222222) come from
@@ -328,36 +147,8 @@ case "$*" in
 *"versions deploy"*"22222222"*)
     STEP=promote_final
     ;;
-*"d1 execute"*"SELECT sql FROM sqlite_master"*)
-    STEP=schema_state
-    ;;
-# check-schema-live.sh reads the bootstrap rows in one `wrangler d1 execute
-# --command` (one statement per table). Match the combined command before the
-# single-table branches below, so it does not short-circuit to whichever single
-# table name happens to appear first in the case order.
-*"d1 execute"*"_deploy_lock"*"push_kind_types"*"_schema_meta"*"privacy_policy_versions"*"device_configuration"*"product_email_control"*)
-    STEP=bootstrap_batch
-    ;;
-*"d1 execute"*"SELECT id, name FROM push_kind_types ORDER BY id;"*)
-    STEP=push_kind_state
-    ;;
-*"d1 execute"*"SELECT id, version FROM _schema_meta ORDER BY id;"*)
-    STEP=schema_version_state
-    ;;
-*"d1 execute"*"FROM privacy_policy_versions"*)
-    STEP=privacy_policy_state
-    ;;
-*"d1 execute"*"FROM device_configuration"*"app_version = 'unknown'"*)
-    STEP=device_config_sentinel_state
-    ;;
 *"d1 execute"*"SELECT locked FROM _deploy_lock WHERE id = 1"* | *"d1 execute"*"SELECT id, locked FROM _deploy_lock ORDER BY id;"*)
     STEP=lock_state
-    ;;
-*"d1 execute"*"SELECT floor_generation"*"FROM _rollback_floor"*)
-    STEP=floor_state
-    ;;
-*"d1 execute"*"UPDATE _rollback_floor SET floor_generation"*)
-    STEP=floor_stamp
     ;;
 *"d1 execute"*"locked = 1"*)
     STEP=lock
@@ -375,15 +166,7 @@ case "$*" in
     STEP=wrangler_rollback
     ;;
 *)
-    if [ -n "$FILE_ARG" ] && [ -f "$FILE_ARG" ] && grep -q "INSERT INTO _deploy_lock (id, locked) VALUES (1, 1)" "$FILE_ARG"; then
-        STEP=schema_apply_lock
-    elif [ -n "$FILE_ARG" ] && [ -f "$FILE_ARG" ] && grep -q "INSERT OR IGNORE INTO _deploy_lock (id, locked) VALUES (1, 0)" "$FILE_ARG"; then
-        STEP=schema_seed
-    elif [ -n "$FILE_ARG" ] && [ -f "$FILE_ARG" ] && grep -q "INSERT OR REPLACE INTO sqlite_stat1" "$FILE_ARG"; then
-        STEP=stats_apply
-    else
-        STEP=other
-    fi
+    STEP=other
     ;;
 esac
 
@@ -395,7 +178,7 @@ fi
 
 if [ -n "${MOCK_LOCK_STATE_AT:-}" ] && [ "${MOCK_LOCK_STATE_AT%%:*}" = "$STEP" ]; then
     _mock_rest="${MOCK_LOCK_STATE_AT#*:}"
-    printf '%s\n' "${_mock_rest#*:}" >"${MOCK_LOCK_STATE_FILE:-$MOCK_LOG_FILE.lock_state}.${_mock_rest%%:*}"
+    printf '%s\n' "${_mock_rest#*:}" >"$MOCK_LOG_FILE.lock_state.${_mock_rest%%:*}"
 fi
 
 # Inject failure if requested. Exit 73 is arbitrary but distinct from any real
@@ -541,24 +324,9 @@ promote_final)
     # promoted rather than the fixture's fixed answer.
     printf '%s' "$*" | grep -Eo '[0-9a-f-]{36}@100%' | head -n 1 | cut -d@ -f1 >"$PROMOTED_FILE"
     ;;
-schema_apply_lock)
-    if [ "${MOCK_SCHEMA_STATE_MODE:-}" = "empty_after_apply" ]; then
-        printf '%s\n' "empty" >"$SCHEMA_STATE_FILE"
-    fi
-    ;;
-floor_stamp)
-    # Store the SET value so the consumer's stamp read-back sees the advance.
-    # Matches only the SET clause - the statement's monotonic WHERE guard uses
-    # `<`, not `=`, so it cannot match here.
-    floor_new=$(printf '%s' "$*" | grep -Eo 'floor_generation = [0-9]+' | head -n 1 | awk '{print $3}')
-    if [ -n "$floor_new" ]; then
-        printf '%s\n' "$floor_new" >"$FLOOR_STATE_FILE"
-    fi
-    ;;
 esac
 
 LOCK_STATE=$(cat "$LOCK_STATE_FILE")
-SCHEMA_STATE=$(cat "$SCHEMA_STATE_FILE")
 
 # Cat the fixture file for this step. JSON-shaped fixtures (parsed by jq in
 # consumer deploy scripts) get the .json extension; everything else is .txt.
@@ -586,7 +354,7 @@ versions_view)
 bookmark)
     cat "$FIXTURE_DIR/$STEP.json"
     ;;
-upload_maint | upload_final | triggers | promote_maint | promote_final | lock | unlock | tt_restore | wrangler_rollback | schema_apply_lock | schema_seed)
+upload_maint | upload_final | triggers | promote_maint | promote_final | lock | unlock | tt_restore | wrangler_rollback)
     cat "$FIXTURE_DIR/$STEP.txt"
     ;;
 lock_state)
@@ -606,56 +374,6 @@ lock_state)
         exit 99
         ;;
     esac
-    ;;
-floor_state)
-    printf '[{"results":[{"floor_generation":%s,"stamped_sha":null,"stamped_at":null}]}]\n' "$(cat "$FLOOR_STATE_FILE")"
-    ;;
-floor_stamp)
-    : # UPDATE has no parsed output; the state write happened above
-    ;;
-schema_state)
-    schema_results
-    ;;
-bootstrap_batch)
-    # One result envelope per statement, in check-schema-live.sh's read order:
-    # .[0]=_deploy_lock, .[1]=push_kind_types, .[2]=_schema_meta,
-    # .[3]=privacy_policy_versions, .[4]=device_configuration sentinel,
-    # .[5]=product_email_control. The table helpers already wrap their rows in
-    # the single-element [{results:...}]
-    # envelope, so unwrap each with .[0] before composing the batch array. The
-    # _deploy_lock envelope mirrors the standalone lock_state branch's
-    # locked/unlocked/missing mapping - keep the two in sync.
-    case "$LOCK_STATE" in
-    locked) lock_inner='{"results":[{"id":1,"locked":1}]}' ;;
-    unlocked) lock_inner='{"results":[{"id":1,"locked":0}]}' ;;
-    missing)
-        printf '%s\n' '{"error":{"text":"no such table: _deploy_lock: SQLITE_ERROR"}}'
-        exit 1
-        ;;
-    *)
-        echo "mock-wrangler: unknown lock state '$LOCK_STATE'" >&2
-        exit 99
-        ;;
-    esac
-    jq -nc \
-        --argjson lock "$lock_inner" \
-        --argjson push "$(push_kind_results | jq -c '.[0]')" \
-        --argjson meta "$(schema_version_results | jq -c '.[0]')" \
-        --argjson privacy "$(privacy_policy_results | jq -c '.[0]')" \
-        --argjson sentinel "$(device_config_sentinel_results | jq -c '.[0]')" \
-        '[$lock, $push, $meta, $privacy, $sentinel, {results:[{id:1,paused:1}]}]'
-    ;;
-push_kind_state)
-    push_kind_results
-    ;;
-schema_version_state)
-    schema_version_results
-    ;;
-privacy_policy_state)
-    privacy_policy_results
-    ;;
-device_config_sentinel_state)
-    device_config_sentinel_results
     ;;
 other)
     : # unknown wrangler subcommand - emit nothing

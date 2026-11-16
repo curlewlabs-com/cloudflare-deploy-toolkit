@@ -50,11 +50,10 @@ DEFAULT_RETRY_BACKOFF = "2 5 15"
 DEFAULT_RELOCATION_MAX_PAUSE_SECONDS = 240
 DEFAULT_VERIFY_BACKOFF = "1 2 4 8"
 
-USAGE = """Usage: %s <staging|production> [--sha SHA] [--expected-serving-sha SHA] [--dry-run]
+USAGE = """Usage: %s <staging|production> [--sha SHA] [--expected-serving-sha SHA]
 
   --sha                   7-char commit hash for deploy metadata (default: git rev-parse)
   --expected-serving-sha  full commit the version serving 100%% must be a final upload of
-  --dry-run               Print commands without executing
 """
 
 
@@ -120,8 +119,7 @@ def _git_short_sha() -> str:
 
 @dataclasses.dataclass(frozen=True)
 class Invocation:
-    """The environment, SHA, expected serving commit, and dry-run choice argv
-    carries.
+    """The environment, SHA and expected serving commit argv carries.
 
     The expected serving commit is an argument, not an environment variable,
     because a caller cannot know which pipeline its target checkout carries: a
@@ -131,12 +129,11 @@ class Invocation:
 
     env: str
     sha: str
-    dry_run: bool
     expected_serving_sha: str = ""
 
 
 def parse_args(argv: Sequence[str]) -> Invocation:
-    """`<staging|production> [--sha SHA] [--expected-serving-sha SHA] [--dry-run]`.
+    """`<staging|production> [--sha SHA] [--expected-serving-sha SHA]`.
 
     `--sha` with nothing after it leaves the sha unset and takes the git
     default, rather than refusing: a trailing flag is a wrapper passing through
@@ -145,7 +142,6 @@ def parse_args(argv: Sequence[str]) -> Invocation:
     env = ""
     sha = ""
     expected_serving_sha = ""
-    dry_run = False
     index = 0
     while index < len(argv):
         argument = argv[index]
@@ -162,8 +158,6 @@ def parse_args(argv: Sequence[str]) -> Invocation:
             if index >= len(argv) or not argv[index] or expected_serving_sha:
                 raise UsageError("--expected-serving-sha takes one commit, once")
             expected_serving_sha = argv[index]
-        elif argument == "--dry-run":
-            dry_run = True
         elif argument in ("-h", "--help"):
             raise UsageError("")
         else:
@@ -175,7 +169,6 @@ def parse_args(argv: Sequence[str]) -> Invocation:
     return Invocation(
         env=env,
         sha=sha or _git_short_sha(),
-        dry_run=dry_run,
         expected_serving_sha=expected_serving_sha,
     )
 
@@ -191,13 +184,11 @@ class DeployConfig:
 
     env: str
     sha: str
-    dry_run: bool
     mode: str
     db_name: str
     wrangler_env: str
     wrangler: tuple[str, ...]
     drain_seconds: int
-    allow_staging_bootstrap: bool
     version_message_annotation: str
     # The full commit being deployed, or empty. Set, every upload's message
     # names it (version_message.py), which is what a later expected-build bind
@@ -336,7 +327,6 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
         "DEPLOY_DRAIN_SECONDS",
     )
 
-    allow_staging_bootstrap = environ.get("DEPLOY_ALLOW_STAGING_BOOTSTRAP") == "true"
     commit_sha = environ.get("DEPLOY_COMMIT_SHA", "")
     if commit_sha and not (
         FULL_SHA.fullmatch(commit_sha) and commit_sha.startswith(invocation.sha)
@@ -352,13 +342,6 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
         raise ConfigError(
             "deploy-lib: --expected-serving-sha must be a full lowercase "
             f"commit SHA, got '{expected_serving_sha}'"
-        )
-    if expected_serving_sha and allow_staging_bootstrap:
-        # A bootstrap tolerates finding nothing serving, which no expected
-        # build can be.
-        raise ConfigError(
-            "deploy-lib: --expected-serving-sha and "
-            "DEPLOY_ALLOW_STAGING_BOOTSTRAP cannot be set together"
         )
 
     # Unset is "no check"; set and empty is a consumer whose own read of its
@@ -376,13 +359,11 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
     return DeployConfig(
         env=invocation.env,
         sha=invocation.sha,
-        dry_run=invocation.dry_run,
         mode=mode,
         db_name=db_name,
         wrangler_env=wrangler_env,
         wrangler=tuple(shlex.split(environ.get("WRANGLER") or DEFAULT_WRANGLER)),
         drain_seconds=drain_seconds,
-        allow_staging_bootstrap=allow_staging_bootstrap,
         version_message_annotation=environ.get("DEPLOY_VERSION_MESSAGE_ANNOTATION", ""),
         commit_sha=commit_sha,
         expected_serving_sha=expected_serving_sha,

@@ -179,15 +179,9 @@ not the OLDER slot" (which catches `.[0]` vs `.[-1]` regressions).
    - Sets `WRANGLER=$HARNESS_DIR/bin/mock-wrangler.sh`
    - Sets `FIXTURE_DIR=$YOUR_FIXTURE_DIR`
    - Sets `MOCK_LOG_FILE=$BATS_TEST_TMPDIR/calls.log`
-   - Sets `MOCK_SCHEMA_FILE` and `MOCK_DATA_SEED_FILE` when the consumer's real
-     postflight hook reads the current schema and lookup-row snapshots instead
-     of stubbing them
-   - Sets `MOCK_SCHEMA_VERSION_FILE` (pointing at the same `version.txt` the
-     consumer ships) when the postflight hook verifies `_schema_meta`; without
-     it the mock falls back to a fixed `version=1` and a real version-bump
-     regression would be invisible
-   - Uses `MOCK_SCHEMA_STATE_MODE=empty_after_apply` in one regression case if
-     the wrapper must prove that an empty post-apply DB fails closed
+   - Stubs its own hooks' database reads (`PREFLIGHT_CMD`, `MIGRATE_CMD`,
+     `POSTFLIGHT_CMD`): the mock answers only the calls the pipeline itself
+     makes, and any other `wrangler` call reads as `other` and prints nothing
    - Has one `@test` per `MOCK_FAIL_AT` value (permanent failures) and asserts
      on the call log
    - Optionally adds `@test` cases using
@@ -197,8 +191,7 @@ not the OLDER slot" (which catches `.[0]` vs `.[-1]` regressions).
 
    A typical driver defines `run_deploy` / `assert_step` / `refute_step` helpers
    wrapping the deploy invocation, then has one case per documented failure
-   point in the pipeline plus one strict-postflight empty-DB case when the
-   consumer's real postflight hook enforces schema presence after apply.
+   point in the pipeline.
 
 3. **Wire up fixture purity** by writing a thin `.bats` wrapper that calls
    `bin/check-fixture-purity.sh` with your fixture dir and a
