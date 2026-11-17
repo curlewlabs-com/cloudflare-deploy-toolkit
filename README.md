@@ -332,7 +332,8 @@ only over-reject already-applied tags.
 Releases are fixed `vMAJOR.MINOR.PATCH` tags with an immutable GitHub Release.
 While the version is 0.x, a minor release may change the wrapper contract, the
 hook contract or the configuration variables; read the release notes before
-moving a pin. Pin a consumer to a tag or a commit, never to `main`.
+moving a pin. Pin a consumer to a tag or a commit, never to `main`. How a
+release is cut is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 
 ## Running the tests
 
