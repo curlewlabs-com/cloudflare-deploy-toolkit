@@ -23,7 +23,9 @@ Durable Objects) that needs to keep working after a deploy fails mid-flight:
    RFC3339 parser and the same bounded future-skew / max-age rules used by the
    reference workflows. A timestamp carrying no UTC offset is refused rather
    than assumed, because a reader that guesses the zone is the bug this helper
-   exists for. It optionally polls a Worker URL that echoes the running build's
+   exists for. Cloudflare's deployments list can lag a deploy that just landed,
+   so a stale answer is read again for about 25 seconds before the helper
+   fails. It optionally polls a Worker URL that echoes the running build's
    commit SHA (`VERIFY_DEPLOYMENT_EXPECTED_SHA` + `VERIFY_DEPLOYMENT_SHA_URL`)
    and fails closed unless the live build matches the expected commit - the
    timestamp alone passes for a sibling deploy that landed between promote and

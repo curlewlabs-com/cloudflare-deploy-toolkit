@@ -22,10 +22,13 @@ The spawned binaries, each for a reason `json`/`urllib` does not cover:
         own exponential backoff over HTTP 408/429/5xx, timeouts, and a refused
         connection, a policy this would otherwise re-implement inside a deploy
         verifier, where getting it subtly wrong turns a good deploy into a red
-        workflow. The live-SHA read carries no retry flags and no `-f` - its
-        retries are this file's own bounded poll, which has to re-read a
-        CHANGING value rather than the same one, and a non-2xx body is the
-        mismatch diagnostic rather than something to fail on.
+        workflow. A read that succeeds but lags the deploy is a success to
+        curl, so reading that stale answer again is this file's own bounded
+        loop (DEPLOYMENTS_READ_ATTEMPTS). The live-SHA read carries no retry
+        flags and no `-f` - its retries are this file's own bounded poll,
+        which has to re-read a CHANGING value rather than the same one, and a
+        non-2xx body is the mismatch diagnostic rather than something to fail
+        on.
   jq    reads VERIFY_DEPLOYMENT_SHA_JQ, which is published as a jq *filter* and
         is used as one: a service deploy can pass
         `select(.maintenanceMode == false and .deployLocked == false) | .sha`, a
@@ -66,6 +69,18 @@ from datetime import datetime
 API_BASE = "https://api.cloudflare.com/client/v4"
 MAX_AGE_SECONDS = 300
 MAX_FUTURE_SKEW_SECONDS = 60
+
+# The deployments list can lag a deploy that wrangler has already reported
+# complete: a read well under a second after `wrangler deploy` returned has come
+# back with the previous deployment, hours old, while a read a moment later
+# showed the new one. A stale answer is therefore read again, at most this many
+# times in all, this far apart - about 25 s past the first read. That is far
+# longer than the lag seen, and short enough that a deploy which did not land
+# still fails within half a minute of where it used to. Only a stale answer is
+# read again; an unreadable list or timestamp, or one too far in the future,
+# says something no wait will change.
+DEPLOYMENTS_READ_ATTEMPTS = 6
+DEPLOYMENTS_READ_INTERVAL_SECONDS = 5
 DEFAULT_SHA_JQ = ".sha"
 DEFAULT_SHA_ATTEMPTS = 6
 DEFAULT_SHA_INTERVAL_SECONDS = 5
@@ -252,12 +267,12 @@ def _verify_live_sha(
     )
 
 
-def run(env: Mapping[str, str]) -> None:
-    for name in REQUIRED_ENV:
-        if not env.get(name):
-            raise VerifyFailure(f"::error::{name} is required", to_stderr=True)
+def _latest_deploy_age(env: Mapping[str, str], script_name: str) -> int:
+    """Read the deployments list once and return its newest entry's age.
 
-    script_name = env["SCRIPT_NAME"]
+    The age is measured against the clock at this read, so reading again later
+    never lets an old deployment count as fresh.
+    """
     latest_deploy = latest_deploy_timestamp(_fetch_deployments(env), script_name)
     deploy_epoch = parse_deploy_epoch(latest_deploy)
     now_epoch = _int_env(env, "VERIFY_DEPLOYMENT_NOW_EPOCH", int(time.time()))
@@ -276,11 +291,31 @@ def run(env: Mapping[str, str]) -> None:
         age_seconds = 0
 
     print(f"Latest deployment for {script_name}: {latest_deploy} ({age_seconds}s ago)")
+    return age_seconds
 
-    if age_seconds > MAX_AGE_SECONDS:
+
+def run(env: Mapping[str, str]) -> None:
+    for name in REQUIRED_ENV:
+        if not env.get(name):
+            raise VerifyFailure(f"::error::{name} is required", to_stderr=True)
+
+    script_name = env["SCRIPT_NAME"]
+    for attempt in range(1, DEPLOYMENTS_READ_ATTEMPTS + 1):
+        age_seconds = _latest_deploy_age(env, script_name)
+        if age_seconds <= MAX_AGE_SECONDS:
+            break
+        if attempt < DEPLOYMENTS_READ_ATTEMPTS:
+            print(
+                f"Read {attempt}/{DEPLOYMENTS_READ_ATTEMPTS}: the newest deployment is"
+                f" {age_seconds}s old; reading the list again in"
+                f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s in case it lags the deploy"
+            )
+            time.sleep(DEPLOYMENTS_READ_INTERVAL_SECONDS)
+    else:
         raise VerifyFailure(
             f"::error::Latest deployment is {age_seconds}s old - expected a deployment"
-            " within the last 5 minutes"
+            f" within the last 5 minutes (read {DEPLOYMENTS_READ_ATTEMPTS} times,"
+            f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s apart)"
         )
 
     # Optional: assert the *live* Worker is serving the expected commit SHA, not
