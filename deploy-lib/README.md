@@ -485,9 +485,9 @@ a deploy that ignored it.
   layers; that variant is a follow-up if a consumer asks for it.
 - **Sets `CI=true` per wrangler call.** Every wrangler invocation runs with
   `CI=true` prefixed so wrangler suppresses its interactive "agent skills"
-  banner, which prints to stdout in agent runtimes (e.g. Claude Code) and would
-  otherwise corrupt the machine-parsed wrangler output (the `--json` lock,
-  deployments, and Time Travel reads, and the `Worker Version ID:` grep off
+  banner, which prints to stdout in agent runtimes and would otherwise corrupt
+  the machine-parsed wrangler output (the `--json` lock, deployments, and Time
+  Travel reads, and the `Worker Version ID:` grep off
   `versions upload`). CI mode is the only working suppression. The prefix is
   scoped to the wrangler process - the pipeline never exports `CI`, so consumer
   hooks keep the caller's own `$CI`.
