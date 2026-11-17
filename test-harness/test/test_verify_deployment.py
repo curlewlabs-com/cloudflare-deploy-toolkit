@@ -2,10 +2,11 @@
 """Deployment-verifier tests.
 
 These cover the consequence-heavy branches: malformed and zone-less timestamps,
-accepted clock skew, rejected future timestamps, stale deployments, and the
-optional live-SHA assertion. A regression here turns a successful deploy into a
-false-negative workflow failure, or lets a sibling deploy's fresh timestamp stand
-in for the build that was actually pushed.
+accepted clock skew, rejected future timestamps, stale deployments, a
+deployments list that lags a deploy, and the optional live-SHA assertion. A
+regression here turns a successful deploy into a false-negative workflow
+failure, or lets a sibling deploy's fresh timestamp stand in for the build that
+was actually pushed.
 
 No network: a fake `curl` first on the verifier's PATH answers the deployments
 read and the live-SHA read with the bodies a case hands it, and
@@ -19,6 +20,8 @@ rather than reaching the age arithmetic.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -26,11 +29,15 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
+import verify_deployment
 from verify_deployment import (
+    DEPLOYMENTS_READ_ATTEMPTS,
+    DEPLOYMENTS_READ_INTERVAL_SECONDS,
     VerifyFailure,
     latest_deploy_timestamp,
     parse_deploy_epoch,
@@ -39,11 +46,18 @@ from verify_deployment import (
 SCRIPT = BIN_DIR / "verify_deployment.py"
 
 # Answers by URL: the Cloudflare deployments read, or any other URL as the live
-# endpoint. A body the case did not give is curl's refused-connection exit.
+# endpoint. The Nth deployments read answers `deployments.N` when the case gave
+# one, so a case can make the list lag and then catch up; `reads` counts them.
+# A body the case did not give is curl's refused-connection exit.
 FAKE_CURL = """#!/bin/sh
 for arg; do url=$arg; done
 case "$url" in
-*/deployments) body="$FAKE_CURL_DIR/deployments" ;;
+*/deployments)
+    reads=$(($(cat "$FAKE_CURL_DIR/reads" 2>/dev/null || echo 0) + 1))
+    echo "$reads" >"$FAKE_CURL_DIR/reads"
+    body="$FAKE_CURL_DIR/deployments.$reads"
+    [ -f "$body" ] || body="$FAKE_CURL_DIR/deployments"
+    ;;
 *) body="$FAKE_CURL_DIR/live_sha" ;;
 esac
 if [ ! -f "$body" ]; then
@@ -57,6 +71,8 @@ cat "$body"
 # age each case asserts is arithmetic rather than a reading of the host clock.
 NOW_EPOCH = "1776897180"
 FRESH_RESPONSE = '{"result":{"deployments":[{"created_on":"2026-04-22T22:32:00Z"}]}}'
+# 780 s before NOW_EPOCH, well past the freshness window.
+STALE_CREATED_ON = "2026-04-22T22:20:00Z"
 
 
 def deployments(created_on: str) -> str:
@@ -219,11 +235,6 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("Latest deployment timestamp is 90s in the future", done.stdout)
 
-    def test_stale_deployment_is_refused(self) -> None:
-        done = self.run_verifier(deployments=deployments("2026-04-22T22:20:00Z"))
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("Latest deployment is 780s old", done.stdout)
-
     def test_a_non_numeric_knob_is_refused_rather_than_defaulted(self) -> None:
         """Falling back to the default would run the check under a schedule the
         operator did not ask for and did not know was ignored."""
@@ -250,6 +261,100 @@ class TimestampGate(VerifierRunner, unittest.TestCase):
                 done = self.run_verifier(deployments=FRESH_RESPONSE, **{missing: ""})
                 self.assertEqual(done.returncode, 1)
                 self.assertIn(f"::error::{missing} is required", done.stderr)
+
+
+class LaggingDeploymentsList(unittest.TestCase):
+    """The deployments list can answer with the previous deployment for a
+    moment after a deploy landed. These rows run the verifier in-process so the
+    waits between reads are recorded rather than slept through, which is what
+    lets the bound itself be asserted."""
+
+    def run_reads(
+        self, answers: dict[int, str], default: str
+    ) -> tuple[int, str, list[float], int]:
+        """Run the verifier with the Nth deployments read answering
+        `answers[N]`, and every other read `default`. Returns the exit code,
+        stdout and stderr together, the recorded waits, and the read count."""
+        with tempfile.TemporaryDirectory() as fake:
+            fake_dir = Path(fake)
+            (fake_dir / "deployments").write_text(default)
+            for read, body in answers.items():
+                (fake_dir / f"deployments.{read}").write_text(body)
+            curl = fake_dir / "curl"
+            curl.write_text(FAKE_CURL)
+            curl.chmod(0o755)
+            env = {
+                "PATH": f"{fake_dir}{os.pathsep}{os.environ['PATH']}",
+                "FAKE_CURL_DIR": str(fake_dir),
+                "CLOUDFLARE_API_TOKEN": "test-token",
+                "CLOUDFLARE_ACCOUNT_ID": "test-account",
+                "SCRIPT_NAME": "test-worker",
+                "VERIFY_DEPLOYMENT_NOW_EPOCH": NOW_EPOCH,
+            }
+            waits: list[float] = []
+            output = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, env),
+                mock.patch.object(verify_deployment.time, "sleep", waits.append),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+            ):
+                returncode = verify_deployment.main([])
+            reads = int((fake_dir / "reads").read_text())
+            return returncode, output.getvalue(), waits, reads
+
+    def test_a_list_that_catches_up_passes(self) -> None:
+        """The defect: a deploy that landed failed on one read of a list that
+        still showed the deployment before it."""
+        returncode, output, waits, reads = self.run_reads(
+            {1: deployments(STALE_CREATED_ON)}, default=FRESH_RESPONSE
+        )
+        self.assertEqual(returncode, 0, msg=output)
+        self.assertEqual(reads, 2)
+        self.assertEqual(waits, [DEPLOYMENTS_READ_INTERVAL_SECONDS])
+        self.assertIn(
+            f"Read 1/{DEPLOYMENTS_READ_ATTEMPTS}: the newest deployment is 780s old",
+            output,
+        )
+        self.assertIn("2026-04-22T22:32:00Z (60s ago)", output)
+
+    def test_a_deploy_that_never_appears_still_fails_within_the_bound(self) -> None:
+        """What the check is for: a deploy that did not land must fail, after a
+        bounded wait and not an open-ended one."""
+        returncode, output, waits, reads = self.run_reads(
+            {}, default=deployments(STALE_CREATED_ON)
+        )
+        self.assertEqual(returncode, 1)
+        self.assertEqual(reads, DEPLOYMENTS_READ_ATTEMPTS)
+        self.assertEqual(
+            waits, [DEPLOYMENTS_READ_INTERVAL_SECONDS] * (DEPLOYMENTS_READ_ATTEMPTS - 1)
+        )
+        self.assertIn(
+            "::error::Latest deployment is 780s old - expected a deployment within"
+            f" the last 5 minutes (read {DEPLOYMENTS_READ_ATTEMPTS} times,"
+            f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s apart)",
+            output,
+        )
+
+    def test_a_fresh_first_read_is_not_read_again(self) -> None:
+        returncode, output, waits, reads = self.run_reads({}, default=FRESH_RESPONSE)
+        self.assertEqual(returncode, 0, msg=output)
+        self.assertEqual((reads, waits), (1, []))
+
+    def test_answers_no_wait_can_change_fail_on_the_first_read(self) -> None:
+        """Reading again is for a list that lags. An unreadable timestamp, a
+        timestamp too far ahead, or no deployments at all is not lag, and
+        waiting on it would only slow the same refusal."""
+        for body, refusal in (
+            (deployments("not-a-timestamp"), "Could not parse deployment timestamp"),
+            (deployments("2026-04-22T22:34:30Z"), "90s in the future"),
+            ('{"result":{"deployments":[]}}', "No deployments found for test-worker"),
+        ):
+            with self.subTest(refusal=refusal):
+                returncode, output, waits, reads = self.run_reads({}, default=body)
+                self.assertEqual(returncode, 1)
+                self.assertIn(refusal, output)
+                self.assertEqual((reads, waits), (1, []))
 
 
 class LiveShaAssertion(VerifierRunner, unittest.TestCase):
