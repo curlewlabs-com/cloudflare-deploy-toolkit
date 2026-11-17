@@ -1,5 +1,21 @@
 # Contributing
 
+Thanks for your interest in improving `cloudflare-deploy-toolkit`. The bar for a
+change is whether a deploy that fails at any step still gets the recovery that
+step calls for, and never mistakes a wrangler exit status for what happened on
+Cloudflare. Bug fixes, a transient wrangler failure shape seen in a real run, a
+failure path the test harness does not yet exercise, and clearer docs are all
+welcome.
+
+## Before a large change
+
+Open an issue describing the problem first. The recovery layers and the unlock
+obligation in `deploy-lib/deploy_recovery.py`, the `_deploy_lock` read-backs in
+`deploy-lib/deploy_lock.py`, and the relocation's lock states in
+`deploy-lib/deploy_relocation.py` carry the safety guarantees, and
+[`deploy-lib/README.md`](deploy-lib/README.md) says what each body does when a
+step fails. A short discussion up front saves rework.
+
 ## Releasing
 
 A patch or minor release needs no approval: whoever cuts it follows the steps
