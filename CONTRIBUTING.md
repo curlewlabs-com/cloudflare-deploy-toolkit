@@ -70,3 +70,9 @@ Publishing is one-way. The published release and its assets are immutable, and
 the fixed-version-tag ruleset keeps the tag from being moved or deleted, which
 is what lets a consumer pin the archive by digest. A mistake in a published
 release is fixed by the next release, never by editing this one.
+
+## License
+
+By submitting a contribution for inclusion in this project, you agree that it
+is licensed under the MIT and Apache-2.0 licenses, as the README's License
+section describes, without any additional terms or conditions.
