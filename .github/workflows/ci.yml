@@ -23,7 +23,7 @@ jobs:
       matrix:
         # The pipeline runs on whatever a consumer's deploy job runs on, and
         # the timestamp and locale handling differ between GNU and BSD hosts.
-        runner: [ubuntu-24.04, macos-15]
+        runner: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: curlewlabs-com/ci-baseline@c82082df9a3c5e6dab047d9ddb92f130f1537d8e # v0.1.1
+      - uses: curlewlabs-com/ci-baseline@f05f17a38ba2dfbaf0cde130a375b346e9a923a2 # v0.2.0
 
   conclusion:
     needs: [test, lint, baseline]
