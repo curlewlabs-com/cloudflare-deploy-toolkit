@@ -147,8 +147,8 @@ class ServingVersion(DecisionCase):
                 )
 
     def test_a_newest_entry_that_is_not_an_object_refuses(self) -> None:
-        newest: object
-        for newest in (1, "abc", [], None):
+        entries: tuple[object, ...] = (1, "abc", [], None)
+        for newest in entries:
             with self.subTest(newest=newest):
                 self.assertRefuses(
                     json.dumps([newest]),

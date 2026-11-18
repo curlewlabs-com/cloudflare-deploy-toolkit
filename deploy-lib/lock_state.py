@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import TypeGuard
 
 LOCKED = "locked"
 UNLOCKED = "unlocked"
@@ -38,7 +38,17 @@ class Unreadable(Exception):
     """The read produced no verdict. Carries what to show an operator."""
 
 
-def _load(raw: str) -> Any:
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    """True for a decoded JSON object. Its keys are strings, which `isinstance`
+    alone cannot tell a type checker."""
+    return isinstance(value, dict)
+
+
+def _is_json_array(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _load(raw: str) -> object:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -53,15 +63,15 @@ def names_missing_lock_table(stdout: str) -> bool:
     has never been filled, and one whose lock reads clear is already serving.
     """
     document = _load(stdout)
-    if not isinstance(document, dict):
+    if not _is_json_object(document):
         return False
     error = document.get("error")
-    if not isinstance(error, dict):
+    if not _is_json_object(error):
         return False
     return any(NO_SUCH_TABLE.match(text) for text in _error_texts(error))
 
 
-def _error_texts(error: dict[str, Any]) -> list[str]:
+def _error_texts(error: dict[str, object]) -> list[str]:
     """Every place wrangler has been seen to put the API's own message.
 
     Older wrangler put it in the error's `text`. Since its version 4, wrangler
@@ -72,20 +82,20 @@ def _error_texts(error: dict[str, Any]) -> list[str]:
     """
     texts = [error.get("text")]
     notes = error.get("notes")
-    if isinstance(notes, list):
-        texts.extend(note.get("text") for note in notes if isinstance(note, dict))
+    if _is_json_array(notes):
+        texts.extend(note.get("text") for note in notes if _is_json_object(note))
     return [text for text in texts if isinstance(text, str)]
 
 
-def _rows(document: Any) -> list[Any] | None:
+def _rows(document: object) -> list[object] | None:
     """The result rows, or None when the document is not the shape D1 returns."""
-    if not isinstance(document, list) or not document:
+    if not _is_json_array(document) or not document:
         return None
     first = document[0]
-    if not isinstance(first, dict):
+    if not _is_json_object(first):
         return None
     results = first.get("results")
-    return results if isinstance(results, list) else None
+    return results if _is_json_array(results) else None
 
 
 def classify(exit_code: int, stdout: str, stderr: str) -> str:
@@ -108,7 +118,7 @@ def classify(exit_code: int, stdout: str, stderr: str) -> str:
         return UNLOCKED
 
     first_row = rows[0]
-    locked = first_row.get("locked") if isinstance(first_row, dict) else None
+    locked = first_row.get("locked") if _is_json_object(first_row) else None
     # Rendered to text and compared whole, so the integer D1 returns and the
     # string a different driver might return are the same answer, and nothing
     # else is. No type arm is needed to reject `true`, a null, a missing column,

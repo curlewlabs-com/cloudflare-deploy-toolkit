@@ -20,14 +20,24 @@ re-dispatched; guessing costs the invariant.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TypeGuard
 
 
 class Refused(Exception):
     """The document does not carry an answer this module will give."""
 
 
-def _parse(raw: str) -> Any:
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    """True for a decoded JSON object. Its keys are strings, which `isinstance`
+    alone cannot tell a type checker."""
+    return isinstance(value, dict)
+
+
+def _is_json_array(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _parse(raw: str) -> object:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -48,15 +58,15 @@ def is_bootstrap_shape(raw: str) -> bool:
         document = _parse(raw)
     except Refused:
         return False
-    if not isinstance(document, list):
+    if not _is_json_array(document):
         return False
     if not document:
         return True
     newest = document[-1]
-    if not isinstance(newest, dict):
+    if not _is_json_object(newest):
         return False
     versions = newest.get("versions")
-    return isinstance(versions, list) and not versions
+    return _is_json_array(versions) and not versions
 
 
 def single_serving_version_id(raw: str) -> str:
@@ -68,12 +78,12 @@ def single_serving_version_id(raw: str) -> str:
     message naming which shape was found is what tells them how.
     """
     document = _parse(raw)
-    if not isinstance(document, list) or not document:
+    if not _is_json_array(document) or not document:
         raise Refused("deployments list is not a non-empty array")
 
     newest = document[-1]
-    versions = newest.get("versions") if isinstance(newest, dict) else None
-    if not isinstance(versions, list):
+    versions = newest.get("versions") if _is_json_object(newest) else None
+    if not _is_json_array(versions):
         raise Refused("the newest deployment carries no versions array")
     if len(versions) != 1:
         raise Refused(
@@ -81,7 +91,10 @@ def single_serving_version_id(raw: str) -> str:
         )
 
     entry = versions[0]
-    percentage = entry.get("percentage") if isinstance(entry, dict) else None
+    # An entry that is not an object reads as one with no fields, which the
+    # percentage check below refuses.
+    fields: dict[str, object] = entry if _is_json_object(entry) else {}
+    percentage = fields.get("percentage")
     # One comparison covers the type too: nothing `json.loads` can produce is
     # equal to 100 without being a number, so a string, a bool, a null, or a
     # missing key all fail here rather than needing an arm of their own.
@@ -91,7 +104,7 @@ def single_serving_version_id(raw: str) -> str:
             f"(got {json.dumps(percentage)})"
         )
 
-    version_id = entry.get("version_id")
+    version_id = fields.get("version_id")
     if not isinstance(version_id, str) or not version_id:
         raise Refused("serving version entry has no usable version_id")
     return version_id

@@ -65,6 +65,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from typing import TypeGuard
 
 API_BASE = "https://api.cloudflare.com/client/v4"
 MAX_AGE_SECONDS = 300
@@ -134,6 +135,16 @@ def parse_deploy_epoch(timestamp: str) -> int:
     return int(parsed.timestamp())
 
 
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    """True for a decoded JSON object. Its keys are strings, which `isinstance`
+    alone cannot tell a type checker."""
+    return isinstance(value, dict)
+
+
+def _is_json_array(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
 def latest_deploy_timestamp(document: str, script_name: str) -> str:
     """Pull `.result.deployments[0].created_on` out of the deployments envelope."""
     try:
@@ -142,13 +153,13 @@ def latest_deploy_timestamp(document: str, script_name: str) -> str:
         payload = None
 
     created_on: object = None
-    if isinstance(payload, dict):
+    if _is_json_object(payload):
         result = payload.get("result")
-        if isinstance(result, dict):
+        if _is_json_object(result):
             deployments = result.get("deployments")
-            if isinstance(deployments, list) and deployments:
+            if _is_json_array(deployments) and deployments:
                 newest = deployments[0]
-                if isinstance(newest, dict):
+                if _is_json_object(newest):
                     created_on = newest.get("created_on")
 
     if not isinstance(created_on, str) or not created_on:

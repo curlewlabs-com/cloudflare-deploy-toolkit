@@ -21,6 +21,7 @@ import dataclasses
 import datetime
 import json
 import re
+from typing import TypeGuard
 
 # The example in Cloudflare's version schema writes the date as a midnight UTC
 # timestamp, while `wrangler versions view --json` prints a bare `YYYY-MM-DD`;
@@ -45,6 +46,20 @@ class Runtime:
         )
 
 
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    """True for a decoded JSON object. Its keys are strings, which `isinstance`
+    alone cannot tell a type checker."""
+    return isinstance(value, dict)
+
+
+def _is_json_array(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _is_name_list(value: object) -> TypeGuard[list[str]]:
+    return _is_json_array(value) and all(isinstance(flag, str) for flag in value)
+
+
 def _calendar_date(value: object, where: str) -> str:
     found = _DATE.fullmatch(value) if isinstance(value, str) else None
     if found is None:
@@ -61,7 +76,7 @@ def _calendar_date(value: object, where: str) -> str:
 
 
 def _flags(value: object, where: str) -> frozenset[str]:
-    if not isinstance(value, list) or not all(isinstance(flag, str) for flag in value):
+    if not _is_name_list(value):
         raise Unreadable(
             f"{where} compatibility_flags is {value!r}, not a list of names"
         )
@@ -74,7 +89,7 @@ def expected(text: str) -> Runtime:
         document: object = json.loads(text)
     except json.JSONDecodeError as error:
         raise Unreadable(f"DEPLOY_EXPECTED_RUNTIME is not JSON ({error})") from error
-    if not isinstance(document, dict) or set(document) != {
+    if not _is_json_object(document) or set(document) != {
         "compatibility_date",
         "compatibility_flags",
     }:
@@ -97,11 +112,11 @@ def of_version(version: object) -> Runtime:
     (https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/get/),
     whose `resources.script_runtime` carries the runtime.
     """
-    resources = version.get("resources") if isinstance(version, dict) else None
+    resources = version.get("resources") if _is_json_object(version) else None
     script_runtime = (
-        resources.get("script_runtime") if isinstance(resources, dict) else None
+        resources.get("script_runtime") if _is_json_object(resources) else None
     )
-    if not isinstance(script_runtime, dict):
+    if not _is_json_object(script_runtime):
         raise Unreadable("the version document has no resources.script_runtime")
     where = "the version's"
     date = _calendar_date(script_runtime.get("compatibility_date"), where)
