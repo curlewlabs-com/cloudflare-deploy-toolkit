@@ -107,7 +107,7 @@ class CancellationDuringAStderrWrite(unittest.TestCase):
         self.assertEqual(status, -signal.SIGTERM)
         self.assertEqual(self.delivered, [signal.SIGTERM])
         with self.assertRaises(ProcessLookupError):
-            os.killpg(hook.process.pid, 0)  # noqa: TID251 - asserts ESRCH itself
+            os.killpg(hook.process.pid, 0)
         written = self.raw.written.decode()
         self.assertIn("hook output\n", written)
         self.assertIn(f"[STOP] signal {int(signal.SIGTERM)}", written)

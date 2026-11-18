@@ -548,7 +548,7 @@ def _signal_group(group: int, stop: signal.Signals) -> None:
     # standalone or vendored copy (its README), so it carries its own stop
     # rather than depending on a consumer's process helpers.
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(group, stop)  # noqa: TID251 - see the comment above
+        os.killpg(group, stop)
 
 
 def _group_has_members(process: subprocess.Popen[bytes], group: int) -> bool:
@@ -560,7 +560,7 @@ def _group_has_members(process: subprocess.Popen[bytes], group: int) -> bool:
     """
     process.poll()
     try:
-        os.killpg(group, 0)  # noqa: TID251 - a probe; EPERM is answered below
+        os.killpg(group, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
