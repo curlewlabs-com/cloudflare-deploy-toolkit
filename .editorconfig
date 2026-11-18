@@ -1,0 +1,7 @@
+root = true
+
+# The shell scripts are indented with four spaces; shfmt reads its style from
+# here, and its default is tabs.
+[*.sh]
+indent_style = space
+indent_size = 4

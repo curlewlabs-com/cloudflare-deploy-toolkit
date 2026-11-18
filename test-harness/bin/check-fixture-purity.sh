@@ -81,8 +81,12 @@ fail() {
     FAIL=$((FAIL + 1))
 }
 
+RUN_COMPLETE=0
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT HUP INT TERM
+# A scan that stopped short must fail, never pass as a clean one: after a
+# `set -u` abort, macOS /bin/sh enters this trap with a stale `$?` of 0.
+# shellcheck disable=SC2154  # the trap body assigns _trap_rc before it reads it
+trap '_trap_rc=$?; [ "$RUN_COMPLETE" = 1 ] || [ "$_trap_rc" -ne 0 ] || _trap_rc=1; rm -rf "$WORK"; exit "$_trap_rc"' EXIT HUP INT TERM
 
 # The fixture list, one path per line, read back line by line so a path holding
 # a space or a tab stays one path. A newline inside a name cannot survive that,
@@ -277,3 +281,4 @@ if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
 echo "[OK] check-fixture-purity: all $PASS assertions passed"
+RUN_COMPLETE=1

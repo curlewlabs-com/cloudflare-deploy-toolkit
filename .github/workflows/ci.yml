@@ -23,7 +23,7 @@ jobs:
       matrix:
         # The pipeline runs on whatever a consumer's deploy job runs on, and
         # the timestamp and locale handling differ between GNU and BSD hosts.
-        runner: [ubuntu-24.04, macos-15]
+        runner: [ubuntu-24.04, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
@@ -34,30 +34,18 @@ jobs:
         with:
           # renovate: datasource=python-version depName=python
           python-version: "3.14.10"
-      # shellcheck and bats are release archives at fixed versions, each
-      # checked against its digest. jq ships on both runner images.
-      - name: Install pinned shellcheck and bats
+      # bats runs the self-tests, so it is this job's own dependency: the
+      # release archive at a fixed version, checked against its digest. jq
+      # ships on both runner images. The baseline job runs shellcheck.
+      - name: Install pinned bats
         env:
-          # renovate: datasource=github-releases depName=koalaman/shellcheck
-          SHELLCHECK_VERSION: v0.11.0
-          SHELLCHECK_SHA256_LINUX_X86_64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-          SHELLCHECK_SHA256_DARWIN_AARCH64: 56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79
           # renovate: datasource=github-tags depName=bats-core/bats-core
           BATS_VERSION: v1.14.0
           BATS_SHA256: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177
         run: |
           set -eu
-          case "$RUNNER_OS" in
-            Linux) platform=linux.x86_64; sum=$SHELLCHECK_SHA256_LINUX_X86_64 ;;
-            macOS) platform=darwin.aarch64; sum=$SHELLCHECK_SHA256_DARWIN_AARCH64 ;;
-          esac
           tools="$RUNNER_TEMP/tools"
           mkdir -p "$tools/bin"
-          curl -fsSL --retry 3 -o "$tools/shellcheck.tar.xz" \
-            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.$platform.tar.xz"
-          echo "$sum  $tools/shellcheck.tar.xz" | shasum -a 256 -c -
-          tar -xJf "$tools/shellcheck.tar.xz" -C "$tools"
-          cp "$tools/shellcheck-$SHELLCHECK_VERSION/shellcheck" "$tools/bin/"
           curl -fsSL --retry 3 -o "$tools/bats.tar.gz" \
             "https://github.com/bats-core/bats-core/archive/refs/tags/$BATS_VERSION.tar.gz"
           echo "$BATS_SHA256  $tools/bats.tar.gz" | shasum -a 256 -c -
@@ -77,6 +65,32 @@ jobs:
       - name: Run the self-tests
         run: ./test-harness/test/check.sh
 
+  lint:
+    # The type checks need the repository's own pinned checkers, so they run
+    # here rather than in the baseline.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          # renovate: datasource=python-version depName=python
+          python-version: "3.14.10"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # renovate: datasource=node-version depName=node
+          node-version: 24.22.2
+      - name: Install the pinned checkers
+        run: |
+          python -m pip install -r requirements-dev.txt
+          npm ci --ignore-scripts
+      - name: mypy (strict)
+        run: mypy
+      - name: TypeScript
+        run: npm run typecheck
+
   baseline:
     # The checks every Curlew Labs repository runs, in one place:
     # https://github.com/curlewlabs-com/ci-baseline
@@ -86,15 +100,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: curlewlabs-com/ci-baseline@c82082df9a3c5e6dab047d9ddb92f130f1537d8e # v0.1.1
+      - uses: curlewlabs-com/ci-baseline@f05f17a38ba2dfbaf0cde130a375b346e9a923a2 # v0.2.0
 
   conclusion:
-    needs: [test, baseline]
+    needs: [test, lint, baseline]
     runs-on: ubuntu-24.04
     if: always()
     steps:
-      - name: Require every self-test job to pass
+      - name: Require every job to pass
         env:
           TEST: ${{ needs.test.result }}
+          LINT: ${{ needs.lint.result }}
           BASELINE: ${{ needs.baseline.result }}
-        run: test "$TEST" = success && test "$BASELINE" = success
+        run: test "$TEST" = success && test "$LINT" = success && test "$BASELINE" = success

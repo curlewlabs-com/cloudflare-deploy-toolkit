@@ -1,0 +1,22 @@
+{
+  // The patterns run in a Worker, so they are checked against the Workers
+  // runtime's types and no DOM. deploy-lock.ts imports `./db`, which a consumer
+  // replaces with their own D1 type; rootDirs resolves that import to the
+  // stand-in under typecheck/, so the pattern is checked as shipped.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "types": ["@cloudflare/workers-types"],
+    "rootDirs": ["worker-patterns", "typecheck"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["worker-patterns/**/*.ts", "typecheck/**/*.ts"]
+}

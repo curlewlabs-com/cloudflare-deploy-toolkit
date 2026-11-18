@@ -7,7 +7,6 @@
 # toolkit README onboarding instructions.
 #
 # What runs:
-#   - shellcheck on every shell script in the toolkit
 #   - bats on every test/*.bats file; each suite's header says what it covers
 #   - the Python unit suites beside this file, which are what pin the gates in
 #     bin/ - the provenance gate's HEAD and SHA modes against real throwaway repos, the
@@ -23,8 +22,8 @@
 #     but is pointed at the consumer's wrapper)
 #
 # Bats-core and Python power the toolkit self-tests. Install via
-# `brew install bats-core shellcheck jq python@3.14 grep` on Mac,
-# `sudo apt install -y bats shellcheck jq python3.14` plus
+# `brew install bats-core jq python@3.14 grep` on Mac,
+# `sudo apt install -y bats jq python3.14` plus
 # `sudo ln -sf /bin/grep /usr/local/bin/ggrep` on Debian/Ubuntu.
 # The macOS-only `grep` formula and that symlink supply `ggrep`, which
 # check-fixture-purity.sh requires and refuses to run without.
@@ -47,24 +46,13 @@ trap cleanup EXIT HUP INT TERM
 
 if ! command -v bats >/dev/null 2>&1; then
     echo "[FAIL] bats-core not on PATH" >&2
-    echo "  Mac:                brew install bats-core shellcheck jq python@3.14 grep" >&2
-    echo "  Debian / Ubuntu:    sudo apt install -y bats shellcheck jq python3.14" >&2
+    echo "  Mac:                brew install bats-core jq python@3.14 grep" >&2
+    echo "  Debian / Ubuntu:    sudo apt install -y bats jq python3.14" >&2
     echo "                      plus ggrep -> the system GNU grep on Linux" >&2
-    echo "  Other Linux:        install bats, shellcheck, jq, and python3 via your package manager" >&2
+    echo "  Other Linux:        install bats, jq, and python3 via your package manager" >&2
     exit 1
 fi
 
-echo "> shellcheck"
-# -x follows source directives; bin scripts source ../lib/test-slots.sh and
-# without -x the linter logs an info-level "not following" that fails CI.
-# The roster is a file so CI and a consumer's own lint read one selection.
-while IFS= read -r script; do
-    [ -n "$script" ] || continue
-    shellcheck -x "$TOOLKIT_DIR/$script"
-done <"$TEST_DIR/shellcheck-files.txt"
-echo "  [OK] all toolkit scripts pass shellcheck"
-
-echo ""
 echo "> bats unit tests"
 # The suites assert with bare `[[ ]]` under errexit. A bash that runs on past a
 # failing `[[ ]]` (macOS /bin/bash 3.2 does) fails a test only on its last
@@ -88,10 +76,10 @@ elif command -v python3 >/dev/null 2>&1; then
     PYTHON=python3
 else
     echo "[FAIL] no python3 on PATH" >&2
-    echo "  Mac:                brew install bats-core shellcheck jq python@3.14 grep" >&2
-    echo "  Debian / Ubuntu:    sudo apt install -y bats shellcheck jq python3.14" >&2
+    echo "  Mac:                brew install bats-core jq python@3.14 grep" >&2
+    echo "  Debian / Ubuntu:    sudo apt install -y bats jq python3.14" >&2
     echo "                      plus ggrep -> the system GNU grep on Linux" >&2
-    echo "  Other Linux:        install bats, shellcheck, jq, and python3 via your package manager" >&2
+    echo "  Other Linux:        install bats, jq, and python3 via your package manager" >&2
     exit 1
 fi
 for suite in "$TEST_DIR"/test_*.py; do

@@ -532,14 +532,14 @@ cover.
 - `wrangler` (`npx wrangler` by default; override via the `WRANGLER` env var)
 - `git` (only for the default `--sha` derivation; can be skipped by passing
   `--sha` explicitly)
-- `bats-core` + `shellcheck` (only for running the toolkit's own tests). The
+- `bats-core` (only for running the toolkit's own tests). The
   gates under `bin/` have their own run-time set: `python3` for
   `check_deploy_ref.py`, `require_github_actions.py`, and
   `verify_deployment.py`, `git` for the provenance gate, and `curl` plus `jq`
   for the deployment verifier, which reads its SHA filter through jq on the
   default `.sha` path as much as on a consumer's own. Install via
-  `brew install bats-core shellcheck jq python@3.14 grep` on Mac,
-  `sudo apt install -y bats shellcheck jq python3.14` on Debian/Ubuntu (plus a
+  `brew install bats-core jq python@3.14 grep` on Mac,
+  `sudo apt install -y bats jq python3.14` on Debian/Ubuntu (plus a
   `ggrep` symlink to the system GNU `grep`), or your distro's equivalent.
   check-fixture-purity.sh additionally requires `ggrep`: it scans fixtures with
   a word-bounded pattern POSIX ERE does not define, and refuses to run rather

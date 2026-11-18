@@ -295,7 +295,7 @@ class LaggingDeploymentsList(unittest.TestCase):
             output = io.StringIO()
             with (
                 mock.patch.dict(os.environ, env),
-                mock.patch.object(verify_deployment.time, "sleep", waits.append),
+                mock.patch.object(time, "sleep", waits.append),
                 contextlib.redirect_stdout(output),
                 contextlib.redirect_stderr(output),
             ):

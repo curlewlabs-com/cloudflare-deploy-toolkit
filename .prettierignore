@@ -1,0 +1,3 @@
+# The unencodable_bookmark smoke test rewrites this fixture by its exact bytes
+# (`"bookmark":"0000`), so its compact layout is part of what that test reads.
+test-harness/test/example-fixtures/bookmark.json
