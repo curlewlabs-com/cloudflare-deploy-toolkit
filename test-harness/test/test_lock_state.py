@@ -186,8 +186,21 @@ class UnreadableStates(LockCase):
         # true/false are the tempting ones: a boolean column is a plausible
         # future shape, and guessing which way it maps is how a deploy walks
         # through a held lock.
-        value: object
-        for value in (True, False, None, 2, -1, 1.0, "yes", "", [], {}, "01", "10"):
+        values: tuple[object, ...] = (
+            True,
+            False,
+            None,
+            2,
+            -1,
+            1.0,
+            "yes",
+            "",
+            [],
+            {},
+            "01",
+            "10",
+        )
+        for value in values:
             with self.subTest(value=value):
                 self.assertUnreadable(
                     0,

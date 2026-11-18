@@ -29,6 +29,7 @@ none.
 from __future__ import annotations
 
 import re
+from typing import TypeGuard
 
 MAINTENANCE = "maintenance"
 FINAL = "final"
@@ -45,15 +46,21 @@ def upload_message(label: str, sha: str, commit: str, annotation: str) -> str:
     return f"{message} {annotation}" if annotation else message
 
 
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    """True for a decoded JSON object. Its keys are strings, which `isinstance`
+    alone cannot tell a type checker."""
+    return isinstance(value, dict)
+
+
 def final_commit(version: object) -> str | None:
     """The full commit a version's final-upload message names, or None.
 
     `version` is a version document as `wrangler versions view --json` prints
     it, which is the `result` of Cloudflare's version endpoint.
     """
-    annotations = version.get("annotations") if isinstance(version, dict) else None
+    annotations = version.get("annotations") if _is_json_object(version) else None
     message = (
-        annotations.get("workers/message") if isinstance(annotations, dict) else None
+        annotations.get("workers/message") if _is_json_object(annotations) else None
     )
     found = FINAL_MESSAGE.fullmatch(message) if isinstance(message, str) else None
     return found.group(1) if found else None

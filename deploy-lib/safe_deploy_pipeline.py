@@ -66,7 +66,7 @@ import subprocess
 import sys
 import time
 import traceback
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from types import FrameType
 
 import deploy_config
@@ -448,7 +448,7 @@ class _FencedHook:
 @contextlib.contextmanager
 def _stopping_the_hook_if_the_pipeline_is_ended(
     argv: Sequence[str],
-) -> Iterator[_FencedHook | None]:
+) -> Generator[_FencedHook | None]:
     """Own cancellation before a fenced hook can start running independently.
 
     Before hooks had a group of their own, a cancellation reached the hook

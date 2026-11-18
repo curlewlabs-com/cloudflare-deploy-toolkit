@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import TypeGuard
 
 import deploy_config
 import deploy_lock
@@ -43,6 +44,12 @@ LOCK_DDL = (
 UNLOCK_SQL = "UPDATE _deploy_lock SET locked = 0 WHERE id = 1"
 
 
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    """True for a decoded JSON object. Its keys are strings, which `isinstance`
+    alone cannot tell a type checker."""
+    return isinstance(value, dict)
+
+
 def bookmark_from(document: str) -> str:
     """The bookmark in a `d1 time-travel info --json` document, or "" for none.
 
@@ -52,10 +59,10 @@ def bookmark_from(document: str) -> str:
     restore out of.
     """
     try:
-        parsed = json.loads(document)
+        parsed: object = json.loads(document)
     except json.JSONDecodeError:
         return ""
-    if not isinstance(parsed, dict):
+    if not _is_json_object(parsed):
         return ""
     bookmark = parsed.get("bookmark")
     return bookmark if isinstance(bookmark, str) else ""

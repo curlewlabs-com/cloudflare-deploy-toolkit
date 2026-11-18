@@ -24,7 +24,9 @@ import safe_deploy_pipeline
 # A missing fixture must fail before the CI job's backstop. This bounds setup,
 # never the timeout assertion, which is driven by readiness instead of time.
 INFINITE = 120
-REAL_WAIT = subprocess.Popen.wait
+# Read through the subscripted class so the saved method's type names the
+# process it waits on; at runtime it is the same function.
+REAL_WAIT = subprocess.Popen[bytes].wait
 
 
 def is_hanging_hook(process: subprocess.Popen[bytes]) -> bool:
