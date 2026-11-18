@@ -360,6 +360,10 @@ Linting and formatting (shellcheck, shfmt, ruff, prettier) run in CI's
 `baseline` job, from
 [ci-baseline](https://github.com/curlewlabs-com/ci-baseline).
 
+eslint runs in CI through ci-baseline. To run the same check locally, after
+installing dependencies: `<a ci-baseline checkout>/lib/lint-local.sh`. It runs
+the ci-baseline commit this repository's workflows pin.
+
 After a bump of CI's bats version, `python3 tools/refresh_test_tools.py`
 rewrites the digest CI checks that archive against.
 
