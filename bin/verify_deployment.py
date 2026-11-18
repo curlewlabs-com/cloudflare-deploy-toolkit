@@ -300,23 +300,25 @@ def run(env: Mapping[str, str]) -> None:
             raise VerifyFailure(f"::error::{name} is required", to_stderr=True)
 
     script_name = env["SCRIPT_NAME"]
-    for attempt in range(1, DEPLOYMENTS_READ_ATTEMPTS + 1):
-        age_seconds = _latest_deploy_age(env, script_name)
-        if age_seconds <= MAX_AGE_SECONDS:
-            break
-        if attempt < DEPLOYMENTS_READ_ATTEMPTS:
-            print(
-                f"Read {attempt}/{DEPLOYMENTS_READ_ATTEMPTS}: the newest deployment is"
-                f" {age_seconds}s old; reading the list again in"
-                f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s in case it lags the deploy"
+    # The first read is outside the loop so that the age the refusal reports
+    # always comes from a read, whatever the bound is set to.
+    attempt = 1
+    age_seconds = _latest_deploy_age(env, script_name)
+    while age_seconds > MAX_AGE_SECONDS:
+        if attempt >= DEPLOYMENTS_READ_ATTEMPTS:
+            raise VerifyFailure(
+                f"::error::Latest deployment is {age_seconds}s old - expected a"
+                f" deployment within the last 5 minutes (read {attempt} times,"
+                f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s apart)"
             )
-            time.sleep(DEPLOYMENTS_READ_INTERVAL_SECONDS)
-    else:
-        raise VerifyFailure(
-            f"::error::Latest deployment is {age_seconds}s old - expected a deployment"
-            f" within the last 5 minutes (read {DEPLOYMENTS_READ_ATTEMPTS} times,"
-            f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s apart)"
+        print(
+            f"Read {attempt}/{DEPLOYMENTS_READ_ATTEMPTS}: the newest deployment is"
+            f" {age_seconds}s old; reading the list again in"
+            f" {DEPLOYMENTS_READ_INTERVAL_SECONDS}s in case it lags the deploy"
         )
+        time.sleep(DEPLOYMENTS_READ_INTERVAL_SECONDS)
+        attempt += 1
+        age_seconds = _latest_deploy_age(env, script_name)
 
     # Optional: assert the *live* Worker is serving the expected commit SHA, not
     # just that some deployment is recent (see the module docstring's race).
