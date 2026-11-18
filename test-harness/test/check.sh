@@ -68,8 +68,8 @@ echo ""
 echo "> python unit tests"
 # Named version first, then the bare name: `python3` can resolve below the floor
 # the gates are written against (Apple's /usr/bin/python3 is the case that
-# exists), and a vendored consumer gets the same ladder rather than this repo's
-# venv, which the toolkit must not depend on.
+# exists), and a vendored consumer gets the same ladder rather than any one
+# repo's virtualenv, which the toolkit must not depend on.
 if command -v python3.14 >/dev/null 2>&1; then
     PYTHON=python3.14
 elif command -v python3 >/dev/null 2>&1; then

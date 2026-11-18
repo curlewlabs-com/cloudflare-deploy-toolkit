@@ -427,9 +427,7 @@ jobs:
       # exists to prevent - and the job goes red without saying why. If you need
       # that record closed, retry the POST below a few times and fail the job
       # if none land. A duplicate status POST is harmless - the record's state
-      # is its latest status - which is what makes the retry safe. (This repo
-      # does it in .github/actions/deployment-record-finish,
-      # which is not part of the vendored toolkit.)
+      # is its latest status - which is what makes the retry safe.
       #
       # auto_inactive=true retires nothing here: GitHub applies it to an
       # environment's earlier non-transient, non-production deployments, and
