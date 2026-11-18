@@ -90,8 +90,8 @@ Cloudflare's own docs found nothing equivalent.
   GitHub-hosted runner gets one from `actions/setup-python`.
 - POSIX `sh` for the shell pieces; `git` for the provenance gate; `curl` and
   `jq` for the deployment verifier; `wrangler` for the pipeline itself.
-- To run the toolkit's own tests: `bats`, `shellcheck`, `jq`, a current `bash`,
-  and GNU grep on PATH as `ggrep` (`test-harness/README.md`).
+- To run the toolkit's own tests: `bats`, `jq`, a current `bash`, and GNU grep
+  on PATH as `ggrep` (`test-harness/README.md`).
 
 ### Install
 
@@ -218,7 +218,7 @@ cloudflare-deploy-toolkit/
 |       +-- example-deploy-wrapper.sh          minimal example wrapper; what the end-to-end suites drive
 |       +-- example-hook.sh                    the hook command the example wrapper points at
 |       +-- example-fixtures/                  generic mock-wrangler fixtures for the end-to-end suites
-|       +-- check.sh                           runs shellcheck, bats, the Python suites, and the vendored-path smoke from CI
+|       +-- check.sh                           runs bats, the Python suites, and the vendored-path smoke from CI
 +-- worker-patterns/              TS code patterns for Worker code
 |   +-- README.md                 when and how to use each pattern
 |   +-- maintenance-gate.ts       request-time MAINTENANCE_MODE check (returns 503)
@@ -342,12 +342,15 @@ release is cut is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 ./test-harness/test/check.sh
 ```
 
-It runs shellcheck over every shell script, the Bats suites, the Python suites,
-and the same run again from a vendored copy of the tree.
+It runs the Bats suites, the Python suites, and the same run again from a
+vendored copy of the tree.
 
-After a bump of CI's shellcheck or bats version,
-`python3 tools/refresh_test_tools.py` rewrites the digests CI checks those
-archives against.
+Linting and formatting (shellcheck, shfmt, ruff, prettier) run in CI's
+`baseline` job, from
+[ci-baseline](https://github.com/curlewlabs-com/ci-baseline).
+
+After a bump of CI's bats version, `python3 tools/refresh_test_tools.py`
+rewrites the digest CI checks that archive against.
 
 ## License
 

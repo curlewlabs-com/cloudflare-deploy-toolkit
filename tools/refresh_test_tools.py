@@ -1,9 +1,9 @@
-"""Finish a test-tool bump in CI: rewrite the shellcheck and bats digests.
+"""Finish a test-tool bump in CI: rewrite the bats digest.
 
-A bump moves `SHELLCHECK_VERSION` or `BATS_VERSION` in
-.github/workflows/ci.yml. The sha256 of each archive CI installs follows from
-that version and cannot be typed from it, so this downloads each archive for
-the version the file now names and writes its digest beside it.
+A bump moves `BATS_VERSION` in .github/workflows/ci.yml. The sha256 of the
+archive CI installs follows from that version and cannot be typed from it, so
+this downloads the archive for the version the file now names and writes its
+digest beside it.
 
     python3 tools/refresh_test_tools.py
 
@@ -22,19 +22,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
-_SHELLCHECK = "https://github.com/koalaman/shellcheck/releases/download/{version}/"
-
 # Each digest line CI checks, with the release archive it is the digest of. A
 # `{version}` is the tag the workflow names, with its `v`.
 ARCHIVES = {
-    "SHELLCHECK_SHA256_LINUX_X86_64": (
-        "SHELLCHECK_VERSION",
-        _SHELLCHECK + "shellcheck-{version}.linux.x86_64.tar.xz",
-    ),
-    "SHELLCHECK_SHA256_DARWIN_AARCH64": (
-        "SHELLCHECK_VERSION",
-        _SHELLCHECK + "shellcheck-{version}.darwin.aarch64.tar.xz",
-    ),
     "BATS_SHA256": (
         "BATS_VERSION",
         "https://github.com/bats-core/bats-core/archive/refs/tags/{version}.tar.gz",

@@ -34,30 +34,18 @@ jobs:
         with:
           # renovate: datasource=python-version depName=python
           python-version: "3.14.10"
-      # shellcheck and bats are release archives at fixed versions, each
-      # checked against its digest. jq ships on both runner images.
-      - name: Install pinned shellcheck and bats
+      # bats runs the self-tests, so it is this job's own dependency: the
+      # release archive at a fixed version, checked against its digest. jq
+      # ships on both runner images. The baseline job runs shellcheck.
+      - name: Install pinned bats
         env:
-          # renovate: datasource=github-releases depName=koalaman/shellcheck
-          SHELLCHECK_VERSION: v0.11.0
-          SHELLCHECK_SHA256_LINUX_X86_64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-          SHELLCHECK_SHA256_DARWIN_AARCH64: 56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79
           # renovate: datasource=github-tags depName=bats-core/bats-core
           BATS_VERSION: v1.14.0
           BATS_SHA256: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177
         run: |
           set -eu
-          case "$RUNNER_OS" in
-            Linux) platform=linux.x86_64; sum=$SHELLCHECK_SHA256_LINUX_X86_64 ;;
-            macOS) platform=darwin.aarch64; sum=$SHELLCHECK_SHA256_DARWIN_AARCH64 ;;
-          esac
           tools="$RUNNER_TEMP/tools"
           mkdir -p "$tools/bin"
-          curl -fsSL --retry 3 -o "$tools/shellcheck.tar.xz" \
-            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.$platform.tar.xz"
-          echo "$sum  $tools/shellcheck.tar.xz" | shasum -a 256 -c -
-          tar -xJf "$tools/shellcheck.tar.xz" -C "$tools"
-          cp "$tools/shellcheck-$SHELLCHECK_VERSION/shellcheck" "$tools/bin/"
           curl -fsSL --retry 3 -o "$tools/bats.tar.gz" \
             "https://github.com/bats-core/bats-core/archive/refs/tags/$BATS_VERSION.tar.gz"
           echo "$BATS_SHA256  $tools/bats.tar.gz" | shasum -a 256 -c -

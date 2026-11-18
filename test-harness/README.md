@@ -74,8 +74,8 @@ failure, etc.) without ever calling real wrangler.
   points its preflight, migration, and post-flight hooks at
 - **`test/example-fixtures/*`** - [OK]: Generic mock-wrangler fixtures the
   end-to-end suites read
-- **`test/check.sh`** - [OK]: Runs shellcheck, `bats *.bats`, the `test_*.py`
-  gate suites, and a vendored-path smoke for the harness entrypoint
+- **`test/check.sh`** - [OK]: Runs `bats *.bats`, the `test_*.py` gate suites,
+  and a vendored-path smoke for the harness entrypoint
 - **consumer's `capture-wrangler-fixtures.sh`** - [OK]: Knows which DB, which
   bindings to scrub, the slot-UUID reshape
 - **consumer's `test-deploy-safe-mock.bats`** - [OK]: Tests _the consumer's_
@@ -255,11 +255,11 @@ The harness uses [bats-core](https://github.com/bats-core/bats-core) for its
 fixture- and pipeline-oriented self-tests and Python's `unittest` for the `bin/`
 gate suites. Consumers should use bats for their `*.bats` drivers too. Install:
 
-- **Mac:** `brew install bats-core shellcheck jq python@3.14 grep`
-- **WSL / Debian / Ubuntu:** `sudo apt install -y bats shellcheck jq python3.14`
+- **Mac:** `brew install bats-core jq python@3.14 grep`
+- **WSL / Debian / Ubuntu:** `sudo apt install -y bats jq python3.14`
   (Python 3.14 from the deadsnakes PPA where the release does not carry it),
   then `sudo ln -sf /bin/grep /usr/local/bin/ggrep`
-- **Other Linux:** install `bats`, `shellcheck`, `jq`, and `python3` via your
+- **Other Linux:** install `bats`, `jq`, and `python3` via your
   distro's package manager (or `cargo install` / GitHub releases), and put GNU
   grep on PATH as `ggrep`
 
@@ -272,7 +272,7 @@ wherever `grep` is aliased, which Ubuntu's stock `~/.bashrc` does. It links with
 `-f` so it also replaces a dangling `ggrep` that such a lookup left behind.
 
 The test runner falls through to the `test-harness/test/check.sh` shell script
-for the shellcheck step and the vendored-path smoke for the harness entrypoint.
+for the vendored-path smoke of the harness entrypoint.
 Assertion-bearing tests are split by what they drive: the wrangler fixture flows
 are `.bats` files, and the `bin/` gates are Python suites beside them, each
 pinning one gate through its real executable. `test/check.sh` prints install
