@@ -1,0 +1,19 @@
+# Tool configuration only: the toolkit is not a Python package, and a consumer
+# runs its scripts from a vendored copy of the tree.
+
+[tool.ruff]
+# The scripts use 3.14 syntax (README, "Requirements").
+target-version = "py314"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+# The pipeline's modules import each other by bare name from deploy-lib/, and
+# each test puts deploy-lib/ or bin/ on sys.path before importing the module it
+# drives, so mypy is given the same search path.
+mypy_path = ["deploy-lib", "bin", "test-harness/test"]
+explicit_package_bases = true
+files = ["bin", "deploy-lib", "test-harness/test", "tools"]

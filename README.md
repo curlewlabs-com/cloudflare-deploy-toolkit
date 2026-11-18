@@ -345,6 +345,17 @@ release is cut is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 It runs the Bats suites, the Python suites, and the same run again from a
 vendored copy of the tree.
 
+CI also type-checks the Python with mypy (strict) and the TypeScript patterns
+with `tsc`, at the versions `requirements-dev.txt` and `package-lock.json` pin.
+From a Python 3.14 virtual environment:
+
+```sh
+pip install -r requirements-dev.txt
+mypy
+npm ci --ignore-scripts
+npm run typecheck
+```
+
 Linting and formatting (shellcheck, shfmt, ruff, prettier) run in CI's
 `baseline` job, from
 [ci-baseline](https://github.com/curlewlabs-com/ci-baseline).

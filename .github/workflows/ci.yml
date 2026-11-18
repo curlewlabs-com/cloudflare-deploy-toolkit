@@ -65,6 +65,32 @@ jobs:
       - name: Run the self-tests
         run: ./test-harness/test/check.sh
 
+  lint:
+    # The type checks need the repository's own pinned checkers, so they run
+    # here rather than in the baseline.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          # renovate: datasource=python-version depName=python
+          python-version: "3.14.10"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # renovate: datasource=node-version depName=node
+          node-version: 24.22.2
+      - name: Install the pinned checkers
+        run: |
+          python -m pip install -r requirements-dev.txt
+          npm ci --ignore-scripts
+      - name: mypy (strict)
+        run: mypy
+      - name: TypeScript
+        run: npm run typecheck
+
   baseline:
     # The checks every Curlew Labs repository runs, in one place:
     # https://github.com/curlewlabs-com/ci-baseline
@@ -77,12 +103,13 @@ jobs:
       - uses: curlewlabs-com/ci-baseline@c82082df9a3c5e6dab047d9ddb92f130f1537d8e # v0.1.1
 
   conclusion:
-    needs: [test, baseline]
+    needs: [test, lint, baseline]
     runs-on: ubuntu-24.04
     if: always()
     steps:
-      - name: Require every self-test job to pass
+      - name: Require every job to pass
         env:
           TEST: ${{ needs.test.result }}
+          LINT: ${{ needs.lint.result }}
           BASELINE: ${{ needs.baseline.result }}
-        run: test "$TEST" = success && test "$BASELINE" = success
+        run: test "$TEST" = success && test "$LINT" = success && test "$BASELINE" = success
