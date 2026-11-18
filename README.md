@@ -194,7 +194,8 @@ for the full API.
 
 ```
 cloudflare-deploy-toolkit/
-+-- LICENSE                       MIT
++-- LICENSE-APACHE                Apache-2.0
++-- LICENSE-MIT                   MIT
 +-- README.md                     (you are here)
 +-- bin/                          gates a consumer invokes as a command
 |   +-- check_deploy_ref.py       deploy provenance: first-parent origin/main, clean tree
@@ -350,4 +351,16 @@ archives against.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Releases published under the MIT license alone may also be used
+under either license.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this project by you, as defined in the Apache-2.0 license,
+shall be dual licensed as above, without any additional terms or conditions.
