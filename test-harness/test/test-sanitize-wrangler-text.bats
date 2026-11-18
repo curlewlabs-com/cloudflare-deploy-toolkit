@@ -34,20 +34,22 @@ sanitize_input() {
 
 # ----------------------------------------------------------------------
 # Wrangler version banner normalization.
-# Catches regex regressions where a wrangler bump (4.79.0 → 4.81.0) leaks
+# Catches regex regressions where a wrangler bump (4.79.0 to 4.81.0) leaks
 # the new version into committed fixtures. The banner must collapse to
 # "wrangler 0.0.0" with and without the "update available" parenthetical.
 #
-# The rule line below is wrangler's own stdout, reproduced byte for byte, and
-# is the one place in this tree where a non-ASCII character survives on
-# purpose: rewriting it to ASCII would make this fixture assert against output
-# wrangler never emits. It is captured data, not prose - the repo-wide ASCII
-# convention governs what we write.
+# The banner below is wrangler's own stdout, reproduced byte for byte: its
+# sun-behind-cloud mark and the box-drawing rule under it are written as
+# printf octal escapes, which produce those exact bytes when the test runs,
+# so the fixture asserts against output wrangler really emits and the file
+# itself stays ASCII.
 # ----------------------------------------------------------------------
 @test "version banner with update warning" {
-  input='⛅️ wrangler 4.79.0 (update available 4.81.0)
-─────────────────────────────────────────────
---dry-run: exiting now.'
+  sun=$(printf '\342\233\205\357\270\217')
+  rule=$(printf '\342\224\200%.0s' {1..45})
+  input="$sun wrangler 4.79.0 (update available 4.81.0)
+$rule
+--dry-run: exiting now."
   run sanitize_input "$input" upload-maint
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrangler 0.0.0"* ]]
@@ -57,8 +59,9 @@ sanitize_input() {
 }
 
 @test "version banner without update warning" {
-  input='⛅️ wrangler 5.0.0
---dry-run: exiting now.'
+  sun=$(printf '\342\233\205\357\270\217')
+  input="$sun wrangler 5.0.0
+--dry-run: exiting now."
   run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrangler 0.0.0"* ]]
