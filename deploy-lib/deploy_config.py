@@ -40,7 +40,6 @@ FULL_SHA = re.compile(r"[0-9a-f]{40}")
 # matching environment variable; `deploy-lib/README.md` documents them.
 DEFAULT_WRANGLER = "npx wrangler"
 DEFAULT_DRAIN_SECONDS = 15
-DEFAULT_RETRY_BACKOFF = "2 5 15"
 # How long a relocation may hold its source fenced before it must have reached
 # the promote. It bounds the time to the promote, not the pause, so a consumer's
 # ceiling on the whole pause has to leave room for whichever way out is longer:
@@ -209,7 +208,7 @@ class DeployConfig:
     # makes no read at all.
     expected_runtime: version_runtime.Runtime | None
     diagnostics_dir: str | None
-    retry_backoff: tuple[int, ...]
+    retry_backoff: tuple[int, ...] | None
     verify_backoff: tuple[int, ...]
     preflight_cmd: tuple[str, ...] | None
     migrate_cmd: tuple[str, ...]
@@ -374,10 +373,10 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
         expected_serving_sha=expected_serving_sha,
         expected_runtime=expected_runtime,
         diagnostics_dir=diagnostics_dir,
-        retry_backoff=_backoff(
-            environ.get("DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS")
-            or DEFAULT_RETRY_BACKOFF,
-            "DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS",
+        retry_backoff=(
+            _backoff(schedule, "DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS")
+            if (schedule := environ.get("DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS"))
+            else None
         ),
         verify_backoff=_backoff(
             environ.get("DEPLOY_VERIFY_BACKOFF_SECONDS") or DEFAULT_VERIFY_BACKOFF,

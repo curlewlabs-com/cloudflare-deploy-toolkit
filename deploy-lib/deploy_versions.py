@@ -30,7 +30,6 @@ import deployments_list
 import version_message
 import version_runtime
 import wrangler_runner
-import wrangler_transient
 from deploy_reporting import emit, emit_error
 from deploy_state import DeployAbort
 
@@ -69,13 +68,13 @@ def view_version(
 
     `just_uploaded` is for an id this run's own upload returned moments before.
     A read-back of such an id has answered not-found and passed on a re-run, so
-    that answer is retried within the runner's attempt budget; for any other id
+    that answer is retried within the runner's visibility budget; for any other id
     it is final (wrangler_transient.is_version_not_found).
     """
     result = runner.run(
         "versions_view",
         ["versions", "view", version_id, "--json", "--env", wrangler_env],
-        retry_also=(wrangler_transient.is_version_not_found if just_uploaded else None),
+        just_uploaded=just_uploaded,
     )
     if not result.ok:
         return None

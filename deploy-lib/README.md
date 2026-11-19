@@ -433,7 +433,10 @@ argument. Hooks exit or `return` non-zero to fail the deploy.
   reads its first upload back with `versions view` before any window or write
   pause opens, and refuses a version recorded at another runtime
   (`version_runtime.py`). A transient read failure is retried on the
-  `DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS` schedule. A refusal names its cause:
+  `DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS` schedule. When Cloudflare reports
+  that the just-uploaded ID is missing (100146), the default schedule adds
+  waits of 30 and 60 seconds for the version to become visible. An explicit
+  retry schedule applies as supplied. A refusal names its cause:
   `RUNTIME MISMATCH`, or `RUNTIME NOT CHECKED` for an unreadable document or a
   failed read. Unset, nothing is read. Set to anything that is not that
   document, empty included, the pipeline refuses to start.

@@ -37,7 +37,7 @@ import random
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import retry_sleep
 import wrangler_transient
@@ -143,14 +143,25 @@ def invoke(argv: Sequence[str]) -> WranglerResult:
     )
 
 
+DEFAULT_BACKOFF = (2, 5, 15)
+# An uploaded version has taken longer to become readable than the ordinary
+# retry budget. These waits buy visibility before promotion or a write pause.
+UPLOAD_VISIBILITY_BACKOFF = (*DEFAULT_BACKOFF, 30, 60)
+
+
 class WranglerRunner:
     """The retry loop, its schedule, and the run's total retry count."""
 
     def __init__(
-        self, *, wrangler: Sequence[str], backoff_seconds: Sequence[int]
+        self, *, wrangler: Sequence[str], backoff_seconds: Sequence[int] | None
     ) -> None:
         self._wrangler = tuple(wrangler)
-        self._backoff = tuple(backoff_seconds)
+        self._backoff = (
+            DEFAULT_BACKOFF if backoff_seconds is None else tuple(backoff_seconds)
+        )
+        self._visibility_backoff = (
+            UPLOAD_VISIBILITY_BACKOFF if backoff_seconds is None else self._backoff
+        )
         self._retries = 0
 
     @property
@@ -163,23 +174,23 @@ class WranglerRunner:
         label: str,
         args: Sequence[str],
         *,
-        retry_also: Callable[[str], bool] | None = None,
+        just_uploaded: bool = False,
     ) -> WranglerResult:
         """`wrangler <args>` with retries. Returns the terminal attempt.
 
-        `retry_also` widens the roster for this one call, for an error that is
-        transient only in a context the caller knows and the roster cannot see
-        (wrangler_transient.is_version_not_found). The attempt budget is the
-        same, so the widening never makes a call unbounded.
+        A caller reading the ID its upload just returned may spend the
+        visibility budget on Cloudflare's version-not-found response.
         """
-        return self.run_command(label, [*self._wrangler, *args], retry_also=retry_also)
+        return self.run_command(
+            label, [*self._wrangler, *args], just_uploaded=just_uploaded
+        )
 
     def run_command(
         self,
         label: str,
         argv: Sequence[str],
         *,
-        retry_also: Callable[[str], bool] | None = None,
+        just_uploaded: bool = False,
     ) -> WranglerResult:
         """The loop, over an argv the caller assembled in full.
 
@@ -187,8 +198,7 @@ class WranglerRunner:
         wrangler, while the hook commands are not wrangler at all and must not
         be retried against a roster written for Cloudflare's error text.
         """
-        schedule = list(self._backoff)
-        total = len(schedule) + 1
+        total = len(self._backoff) + 1
         attempt = 1
 
         while True:
@@ -205,8 +215,12 @@ class WranglerRunner:
                     self._retries += attempt - 1
                 return result
 
-            if not wrangler_transient.is_transient(result.combined) and not (
-                retry_also is not None and retry_also(result.combined)
+            waiting_for_visibility = (
+                just_uploaded
+                and wrangler_transient.is_version_not_found(result.combined)
+            )
+            if not waiting_for_visibility and not wrangler_transient.is_transient(
+                result.combined
             ):
                 if attempt > 1:
                     print(
@@ -226,9 +240,13 @@ class WranglerRunner:
                 write_stderr(result.stderr)
                 return result
 
-            if not schedule:
+            schedule = (
+                self._visibility_backoff if waiting_for_visibility else self._backoff
+            )
+            total = len(schedule) + 1
+            if attempt >= total:
                 print(
-                    f"[deploy-retry] {label}: exhausted {total} attempts, "
+                    f"[deploy-retry] {label}: exhausted {attempt} attempts, "
                     f"giving up (exit={result.returncode})",
                     file=sys.stderr,
                     flush=True,
@@ -238,7 +256,7 @@ class WranglerRunner:
                 return result
 
             wait = retry_sleep.sleep_seconds(
-                schedule.pop(0), retry_sleep.draw_jitter(random.SystemRandom())
+                schedule[attempt - 1], retry_sleep.draw_jitter(random.SystemRandom())
             )
             print(
                 f"[deploy-retry] {label}: attempt {attempt}/{total} failed with "
