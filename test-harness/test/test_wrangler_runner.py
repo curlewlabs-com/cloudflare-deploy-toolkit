@@ -20,6 +20,7 @@ import sys
 import unittest
 from collections.abc import Sequence
 from typing import override
+from unittest.mock import patch
 
 MODULE = (
     pathlib.Path(__file__).resolve().parents[2] / "deploy-lib" / "wrangler_runner.py"
@@ -27,8 +28,8 @@ MODULE = (
 
 sys.path.insert(0, str(MODULE.parent))
 
+import deploy_versions
 import wrangler_runner
-import wrangler_transient
 
 # What wrangler_runner's own surrogateescape decode produces from a byte the
 # Cloudflare API rendered that is not UTF-8.
@@ -80,8 +81,12 @@ FOUND = wrangler_runner.WranglerResult(returncode=0, stdout="{}", stderr="")
 class ScriptedRunner(wrangler_runner.WranglerRunner):
     """Answers each attempt from a script instead of running wrangler."""
 
-    def __init__(self, answers: list[wrangler_runner.WranglerResult]) -> None:
-        super().__init__(wrangler=["wrangler"], backoff_seconds=[0, 0, 0])
+    def __init__(
+        self,
+        answers: list[wrangler_runner.WranglerResult],
+        backoff: Sequence[int] | None = (0, 0, 0),
+    ) -> None:
+        super().__init__(wrangler=["wrangler"], backoff_seconds=backoff)
         self._answers = answers
         self.attempts = 0
 
@@ -91,25 +96,54 @@ class ScriptedRunner(wrangler_runner.WranglerRunner):
         return self._answers.pop(0)
 
 
-class RetryAlso(unittest.TestCase):
+class UploadVisibility(unittest.TestCase):
     """A caller widening the roster for one call, as the runtime check's
     read-back of its own upload does for the version not-found."""
+
+    def test_uploaded_version_appears_after_ordinary_retries_are_spent(self) -> None:
+        runner = ScriptedRunner([NOT_FOUND] * 5 + [FOUND], backoff=None)
+        with patch("wrangler_runner.time.sleep") as sleep:
+            self.assertEqual(
+                deploy_versions.view_version(
+                    runner, "staging", "id", just_uploaded=True
+                ),
+                {},
+            )
+        # The incident exhausted the old wall-clock window as well as its attempts.
+        self.assertGreater(sum(call.args[0] for call in sleep.call_args_list), 90)
+        self.assertEqual(runner.retries, 5)
+
+    def test_permanently_invisible_upload_still_aborts(self) -> None:
+        runner = ScriptedRunner([NOT_FOUND] * 6, backoff=None)
+        with patch("wrangler_runner.time.sleep"):
+            self.assertIsNone(
+                deploy_versions.view_version(
+                    runner, "staging", "id", just_uploaded=True
+                )
+            )
+
+    def test_transport_failure_cannot_spend_the_extra_visibility_budget(self) -> None:
+        transport = wrangler_runner.WranglerResult(1, "", "fetch failed")
+        runner = ScriptedRunner([NOT_FOUND] * 4 + [transport], backoff=None)
+        with patch("wrangler_runner.time.sleep"):
+            self.assertIsNone(
+                deploy_versions.view_version(
+                    runner, "staging", "id", just_uploaded=True
+                )
+            )
+        self.assertEqual(runner.retries, 4)
 
     def test_the_widened_error_is_retried_until_it_clears(self) -> None:
         # Guards the deploy that failed on a read-back a second after upload.
         runner = ScriptedRunner([NOT_FOUND, FOUND])
-        result = runner.run(
-            "versions_view", [], retry_also=wrangler_transient.is_version_not_found
-        )
+        result = runner.run("versions_view", [], just_uploaded=True)
         self.assertTrue(result.ok)
         self.assertEqual(runner.attempts, 2)
 
     def test_the_widening_keeps_the_attempt_budget(self) -> None:
         # A version that never appears must still end the read, not hang it.
         runner = ScriptedRunner([NOT_FOUND] * 4)
-        result = runner.run(
-            "versions_view", [], retry_also=wrangler_transient.is_version_not_found
-        )
+        result = runner.run("versions_view", [], just_uploaded=True)
         self.assertFalse(result.ok)
         self.assertEqual(runner.attempts, 4)
 

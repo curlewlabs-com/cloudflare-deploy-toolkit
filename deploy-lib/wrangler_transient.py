@@ -128,7 +128,7 @@ def is_transient(combined_output: str) -> bool:
 # re-run passed; for such an id the read is safe to repeat within a bound. It
 # is NOT in the roster above, because for any other id it is an answer - the
 # version does not exist, and asking again changes nothing. Only a caller that
-# knows its id came from an upload it just made may pass this as retry_also.
+# knows its id came from an upload it just made may retry this response.
 # Bounded on the right so a longer code that begins with these digits is not
 # read as this one, the boundary the status arms above keep for the same reason.
 _VERSION_NOT_FOUND_RE = re.compile(r"code: 100146(?![0-9])")
