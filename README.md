@@ -107,20 +107,25 @@ published; pin the URL and the digest, and verify before extracting:
 ```sh
 TAG=${TOOLKIT_TAG:?Set TOOLKIT_TAG to a published release tag}
 URL=https://github.com/curlewlabs-com/cloudflare-deploy-toolkit/releases/download/$TAG/cloudflare-deploy-toolkit-$TAG.tar.gz
-curl -fsSLo toolkit.tar.gz "$URL"
-echo "<sha256 from SHA256SUMS>  toolkit.tar.gz" | shasum -a 256 -c -
-tar -xzf toolkit.tar.gz -C vendor
+curl -fsSLo toolkit.tar.gz "$URL" &&
+  echo "<sha256 from SHA256SUMS>  toolkit.tar.gz" | shasum -a 256 -c - &&
+  tar -xzf toolkit.tar.gz -C vendor
 ```
 
 #### 4. Single-file curl
 
-For automated tooling that wants the latest pipeline and verify helper:
+Run this script to install the pinned pipeline and verify helper into a fresh
+versioned directory. Switch your wrapper to that directory after installation:
 
 ```sh
+set -eu
 REF=${TOOLKIT_REF:?Set TOOLKIT_REF to the commit containing these instructions}
 BASE=https://raw.githubusercontent.com/curlewlabs-com/cloudflare-deploy-toolkit/$REF
-DEST=vendor/cloudflare-deploy-toolkit
-mkdir -p "$DEST/deploy-lib" "$DEST/bin"
+DEST="vendor/cloudflare-deploy-toolkit-$REF"
+mkdir -p vendor
+STAGE=$(mktemp -d vendor/.toolkit.XXXXXXXX)
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p "$STAGE/deploy-lib" "$STAGE/bin"
 for f in deploy-lib/wrangler-retry.sh \
     deploy-lib/safe_deploy_pipeline.py deploy-lib/deploy_config.py \
     deploy-lib/deploy_state.py deploy-lib/deploy_reporting.py \
@@ -132,8 +137,10 @@ for f in deploy-lib/wrangler-retry.sh \
     deploy-lib/diagnostics_path.py \
     deploy-lib/retry_sleep.py deploy-lib/version_message.py \
     deploy-lib/version_runtime.py bin/verify_deployment.py; do
-  curl -fsSL "$BASE/$f" > "$DEST/$f"
+  curl -fsSLo "$STAGE/$f" "$BASE/$f"
 done
+chmod +x "$STAGE/bin/verify_deployment.py"
+python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$STAGE" "$DEST"
 ```
 
 Always pin to a specific tag rather than `main`.
@@ -275,7 +282,9 @@ only over-reject already-applied tags.
   preflight must verify the candidate binding and the migration hook target
   both resolve to the database bound to the captured Worker version.
 - Use expand/contract migrations that keep the serving and rollback versions
-  compatible. Even a code-only change can write data before rollback. Verify
+  compatible through every database state that a partially applied migration can
+  leave behind. Wait for propagation and outstanding requests from older versions
+  to finish before contracting a schema they still use. Even a code-only change can write data before rollback. Verify
   both versions can consume each other's writes throughout recovery. The
   toolkit never rewinds a live database.
 

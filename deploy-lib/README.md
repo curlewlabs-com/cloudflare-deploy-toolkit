@@ -18,7 +18,11 @@ select `DEPLOY_PIPELINE_MODE=windowless-v1` and provide `WINDOWLESS_PREFLIGHT_CM
 Have that command refuse an unreadable or held database fence while any old
 deployment can still set it. Once all old writers have retired and the final
 fence is verified clear, the hook checks the live schema and compatibility of
-the migration. The command receives the environment followed by the captured
+the migration. Verify every committed intermediate state can serve every Worker
+version still executing. A deployment showing the captured version at full
+traffic does not prove older requests have finished. Defer contract migrations
+until the earlier code has drained across propagation and in-flight work.
+The command receives the environment followed by the captured
 Worker version ID. Read that immutable version's bindings and compatibility
 metadata. A check that also reads a live endpoint must verify that its response
 belongs to the captured version. Refuse a changed or unreadable database
@@ -37,7 +41,7 @@ Older releases reject the new mode, so a mismatched wrapper and pin abort. A pre
 1. The pipeline captures the serving version for rollback. When given an
    expected serving commit it verifies the immutable upload message.
 2. Your preflight checks writes, migrations, bindings and triggers for compatibility with
-   that version. The pipeline rechecks it before changing triggers.
+   the candidate and every version that can still execute. The pipeline rechecks it before changing triggers.
 3. Wrangler synchronizes the triggers. The pipeline rechecks the serving version
    before allowing your migration to run.
 4. After migration, it uploads the new version and verifies its runtime if
@@ -51,8 +55,11 @@ Inspect the triggers Wrangler attempted to change, including queue consumers,
 routes and schedules. Reconcile the active configuration with the serving code.
 Reconcile them explicitly after any rollback, which changes only the version.
 A failed promotion whose submission might have applied triggers
-rollback to the captured version. A rejected lookup that never submitted the
-promotion leaves the current traffic split alone. A successful promotion
+rollback to the captured version. The pipeline leaves the traffic split alone only if every failed attempt
+was a rejected version lookup before submission. A later rejected lookup
+cannot clear an earlier ambiguous submission. If rollback reports failure,
+read the serving version and traffic split before changing traffic. A lost
+response can follow a successful rollback. A successful promotion
 followed by a postflight failure leaves the new version live for investigation.
 Final promotion verifies the recorded serving version again, including before
 each retry for a rejected version lookup. All migrations must keep both
@@ -115,8 +122,9 @@ pipeline being a program rather than a library:
 Export `DEPLOY_WRANGLER_ENV_STAGING` or `DEPLOY_WRANGLER_ENV_PRODUCTION` for
 the requested environment. `MIGRATE_CMD` is required. Use `true` when the
 deployment has no migration. `WINDOWLESS_PREFLIGHT_CMD` is required and must
-verify the migration is safe under live traffic and both versions can process
-each other's writes, including when the migration command is `true`. `POSTFLIGHT_CMD` is optional.
+verify every database state a partial migration can leave is compatible with
+every version that can still execute. Verify two-way write compatibility even
+when the migration command is `true`. `POSTFLIGHT_CMD` is optional.
 Each command is split using shell quoting and receives the target environment
 after any configured arguments. Preflight also receives the immutable serving
 version ID after the environment. Hooks inherit the wrapper's environment. A nonzero exit
@@ -136,7 +144,9 @@ mode refuses before any remote call.
   this run uploaded is missing (100146), reads and promotions use an extended
   default schedule with additional waits of 30 and 60 seconds. The deploy
   endpoint can still report the version missing after a successful read.
-  An explicit retry schedule applies as supplied. Promotion retries require
+  An explicit retry schedule applies as supplied. Ordinary transient errors
+  use the transient backoff and can leave submission uncertain. To qualify
+  separately for a missing-version retry, the promotion requires
   Wrangler's API error on stderr to name the pinned version lookup and its
   missing-version code. With logging suppressed, or when deployment submission
   itself fails, a failed promotion retains its rollback obligation.

@@ -96,7 +96,7 @@ class Recovery:
                 "required."
             )
             self._reporter.summary(
-                "| **ACTION REQUIRED** | Manual rollback via Cloudflare dashboard |"
+                "| **ACTION REQUIRED** | Check serving version and traffic split before manual recovery |"
             )
             return
 
@@ -109,16 +109,17 @@ class Recovery:
             rolled_back = False
             traceback.print_exc()
             self._reporter.ci_error(
-                "wrangler rollback raised - treating the previous version as "
-                f"NOT restored: {exc!r}"
+                f"wrangler rollback raised without confirming the serving version: {exc!r}"
             )
         if rolled_back:
             state.rollback_result = "success"
             return
         state.rollback_result = "failed"
         self._reporter.ci_error(
-            "wrangler rollback FAILED - manual rollback required via Cloudflare "
-            f"dashboard (target version: {state.prev_version_id})"
+            "wrangler rollback did not confirm recovery. Read the serving version "
+            "and traffic split before changing traffic in the dashboard. "
+            f"If the target version {state.prev_version_id} already serves all "
+            "traffic, no further rollback is needed."
         )
 
     def _bundle_rows(self, exit_code: int) -> list[tuple[str, str]]:

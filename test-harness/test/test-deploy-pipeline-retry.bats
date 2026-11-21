@@ -225,6 +225,16 @@ assert_step_called_n_times() {
   assert_step_called_n_times 3 wrangler_rollback
 }
 
+# A lost rollback response can follow a successful traffic change.
+@test "uncertain rollback identifies the pinned target and asks for a live read" {
+  run_wrapper "MOCK_FAIL_AT=promote_final wrangler_rollback"
+  [ "$status" -ne 0 ]
+  target=$(jq -r '.[-1].versions[0].version_id' "$FIXTURE_DIR/deployments_list.json")
+  grep -Fq "rollback $target --env staging" "$CALLS_LOG"
+  [[ "$output" == *"Read the serving version and traffic split before changing traffic"* ]]
+  [[ "$output" == *"target version $target already serves all traffic"* ]]
+}
+
 # ----------------------------------------------------------------------
 # Deployment-list retry diagnostics must not contaminate parsed stdout.
 # The failure bundle reports retries across the capture and later rechecks.
