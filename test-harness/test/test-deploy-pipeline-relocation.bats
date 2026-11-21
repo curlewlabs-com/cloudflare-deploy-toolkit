@@ -263,6 +263,16 @@ assert_hook_and_its_child_are_gone() {
   [[ "$output" == *"ran past the relocation's pause budget"* ]]
 }
 
+@test "relocation keeps both databases fenced when the promotion target is missing" {
+  given_locks unlocked missing
+  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_with_annotation
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  [ "$(lock_of "$SOURCE_DB")" = locked ]
+  [ "$(lock_of "$TARGET_DB")" = locked ]
+  refute_step_called wrangler_rollback
+}
+
 @test "relocation_copy_runs_past_the_pause_budget: stopped with everything it started, and the source is given back" {
   # A copy that hangs would otherwise hold the source's writes for as long as
   # it liked. Stopping only the hook's shell would leave the program it started

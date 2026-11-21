@@ -132,7 +132,7 @@ migrate                        <- consumer hook (atomic imports; failure = fix f
 upload final version
 check its runtime              <- only with DEPLOY_EXPECTED_RUNTIME; old version still serving
 re-verify serving version      <- TOCTOU re-check, immediately before promotion
-promote final version          <- failure rolls the Worker back (never D1)
+promote final version          <- rollback if an attempt may have changed traffic
 postflight check               <- consumer hook; failure after the promote is a
                                  loud red with NO automatic recovery
 ```
@@ -191,7 +191,8 @@ An exit path runs on every exit, with concentric recovery layers:
 - **...same, but a promote was in flight**: `wrangler rollback` to
   `prev_version_id` (worker only, never a restore). Either promote counts:
   `versions deploy <id>@100%` can apply server-side and still report failure, so
-  a promote whose call did not return successfully is treated as possibly live.
+  a failed promotion is treated as possibly live unless every attempt recorded
+  a rejection looking up the pinned version before submitting the deployment.
   Rollback to a pinned version is idempotent, so a promote that did not apply
   just re-pins the version already serving. This is the only rollback trigger on
   the windowless body, where `maint_live` is never set.
@@ -250,6 +251,13 @@ retryable) spends the whole schedule turning a clear verdict into a slow one.
 Retry attempts are logged to stderr and the total retry count is recorded in the
 diagnostics bundle as `total_wrangler_retries` so operators can spot creeping
 retry rates.
+
+Serialize deploys to each environment and leave its traffic split and database
+locks under pipeline control through recovery. On a windowless visibility
+retry the pipeline checks the serving version again before sending the pinned
+promotion. During relocation the source is already fenced when promotion
+starts. A missing target there enters the usual forward recovery immediately,
+so waiting for propagation cannot extend the write pause.
 
 The wrangler retry loop layers beneath the lock read-back verify: a retry on the
 lock UPDATE may succeed on the second attempt, but if it does not, the read-back
@@ -402,7 +410,15 @@ argument. Hooks exit or `return` non-zero to fail the deploy.
   backoff schedule for retrying a wrangler invocation whose output matches the
   transient-error allowlist. Items count = retry slots; total attempts =
   items + 1. Jitter of 0-1s is added per sleep when the base is >1s. Set to
-  `0 0 0` in tests to keep wall time flat.
+  `0 0 0` in tests to keep wall time flat. When Cloudflare reports a version
+  this run uploaded is missing (100146), reads and windowed or windowless
+  promotions use an extended
+  default schedule with additional waits of 30 and 60 seconds. The deploy
+  endpoint can still report the version missing after a successful read.
+  An explicit retry schedule applies as supplied. Promotion retries require
+  Wrangler's API error on stderr to name the pinned version lookup and its
+  missing-version code. With logging suppressed, or when deployment submission
+  itself fails, a failed promotion retains its rollback obligation.
 - **`DEPLOY_SCRIPT_RETRY_BACKOFF_SECONDS`** - `2 5 15`: Space-separated backoff
   schedule for `deploy_wrangler_retry` in `wrangler-retry.sh`, which the
   consumer's own preflight/postflight scripts call directly or through
@@ -433,10 +449,7 @@ argument. Hooks exit or `return` non-zero to fail the deploy.
   reads its first upload back with `versions view` before any window or write
   pause opens, and refuses a version recorded at another runtime
   (`version_runtime.py`). A transient read failure is retried on the
-  `DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS` schedule. When Cloudflare reports
-  that the just-uploaded ID is missing (100146), the default schedule adds
-  waits of 30 and 60 seconds for the version to become visible. An explicit
-  retry schedule applies as supplied. A refusal names its cause:
+  `DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS` schedule described above. A refusal names its cause:
   `RUNTIME MISMATCH`, or `RUNTIME NOT CHECKED` for an unreadable document or a
   failed read. Unset, nothing is read. Set to anything that is not that
   document, empty included, the pipeline refuses to start.

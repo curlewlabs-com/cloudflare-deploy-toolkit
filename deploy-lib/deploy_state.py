@@ -85,6 +85,10 @@ class PipelineState:
     unlock_result: str = "not_run"
     failed_step: str = "none"
 
+    def uploaded_version(self, version_id: str) -> bool:
+        """Only an id returned by this run can still be propagating."""
+        return bool(version_id) and version_id in (self.new_maint_id, self.new_final_id)
+
     @property
     def unlock_is_safe(self) -> bool:
         """Whether clearing the lock re-admits writes against known-good code.

@@ -139,6 +139,27 @@ def is_version_not_found(combined_output: str) -> bool:
     return _VERSION_NOT_FOUND_RE.search(combined_output) is not None
 
 
+# Wrangler also prints version annotations on stdout and can fail after applying
+# the deployment. Only its API error for the target lookup identifies this miss.
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
+_MISSING_VERSION_REQUEST = re.compile(
+    r"^[^\w\r\n]*\[ERROR\] A request to the Cloudflare API "
+    r"\(/accounts/[^/()\s]+/workers/scripts/[^/()\s]+/versions/([^/()\s]+)\) failed\."
+    r"[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]+The requested Worker version could not be found"
+    r"[^\r\n]*?\[code: 100146\][ \t]*$",
+    re.MULTILINE,
+)
+
+
+def missing_promotion_target(stderr: str, version_id: str) -> bool:
+    """Did the failed API request look up this promotion's pinned version?"""
+    plain = _SGR.sub("", stderr)
+    if plain.count("[ERROR]") != 1:
+        return False
+    error = _MISSING_VERSION_REQUEST.search(plain)
+    return error is not None and error.group(1) == version_id
+
+
 def main(argv: Sequence[str]) -> int:
     """Read wrangler's combined output on stdin; 0 = transient, 1 = not.
 

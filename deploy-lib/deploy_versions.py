@@ -21,7 +21,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import deploy_config
 import deploy_reporting
@@ -53,8 +53,6 @@ def view_version(
     runner: wrangler_runner.WranglerRunner,
     wrangler_env: str,
     version_id: str,
-    *,
-    just_uploaded: bool = False,
 ) -> object | None:
     """One version's document, or None when it could not be read.
 
@@ -65,16 +63,9 @@ def view_version(
     the reason is in the log when this returns None: wrangler's stderr for a
     failed call, and this function's own line for a call that succeeded without
     printing a document, which can leave nothing on stderr at all.
-
-    `just_uploaded` is for an id this run's own upload returned moments before.
-    A read-back of such an id has answered not-found and passed on a re-run, so
-    that answer is retried within the runner's visibility budget; for any other id
-    it is final (wrangler_transient.is_version_not_found).
     """
-    result = runner.run(
-        "versions_view",
-        ["versions", "view", version_id, "--json", "--env", wrangler_env],
-        just_uploaded=just_uploaded,
+    result = runner.run_version(
+        "versions_view", "view", version_id, ["--json", "--env", wrangler_env]
     )
     if not result.ok:
         return None
@@ -284,9 +275,7 @@ class WorkerVersions:
         if expected is None:
             return
         self._reporter.step(f"Verify the uploaded version's runtime ({config.env})")
-        document = view_version(
-            self._runner, config.wrangler_env, version_id, just_uploaded=True
-        )
+        document = view_version(self._runner, config.wrangler_env, version_id)
         if document is None:
             emit_error(
                 f"[FAIL] RUNTIME NOT CHECKED: reading uploaded version {version_id} "
@@ -330,61 +319,60 @@ class WorkerVersions:
         """
         config = self._config
         self._reporter.step(f"Update triggers ({config.env})")
-        self._require(
+        result = self._runner.run(
             "triggers_deploy", ["triggers", "deploy", "--env", config.wrangler_env]
         )
+        self._require(result)
 
     def promote_maintenance_version(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Promote maintenance version to 100% ({config.env})")
+
         # Marked in flight BEFORE the call, the same way the final promote is
         # and for the same reason (see the flag's declaration in
         # deploy_state.py). Rollback to a pinned version is idempotent, so a
         # promote that did NOT apply just re-pins the version already serving.
-        state.maint_promote_attempted = True
+        def mark_attempt(in_flight: bool) -> None:
+            state.maint_promote_attempted = in_flight
+
         # Idempotent: the version id pins the target, so repeating the call
         # converges on the same traffic split.
-        self._require(
+        self._promote(
             "promote_maint",
-            [
-                "versions",
-                "deploy",
-                f"{state.new_maint_id}@100%",
-                "--env",
-                config.wrangler_env,
-                "--yes",
-                "--message",
-                f"deploy-pipeline promote maintenance ({config.sha})",
-            ],
+            state.new_maint_id,
+            version_message.MAINTENANCE,
+            mark_attempt,
         )
         state.maint_live = True
         # Cleared on success: from here maint_live carries the rollback
         # obligation, and a stale flag would roll back a deploy that completed.
         state.maint_promote_attempted = False
 
-    def promote_final_version(self) -> None:
+    def promote_final_version(self, guard: Callable[[], None] | None = None) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Promote final version to 100% ({config.env})")
-        # Marked in flight BEFORE the call, unlike the maintenance promote:
+
+        # Marked in flight BEFORE the call, as for the maintenance promote:
         # `versions deploy @100%` can apply server-side and still return
         # non-zero after retries. On the windowless body maint_live is never
         # true, so without this flag the recovery path would skip the rollback
         # and leave the new, maybe-live version up while reporting "old version
         # still serving". Rollback to a pinned version is idempotent, so a
         # promote that did NOT apply just no-ops.
-        state.final_promote_attempted = True
-        self._require(
+        def recheck() -> None:
+            if guard is not None:
+                guard()
+            self._reporter.step(f"Promote final version to 100% ({config.env})")
+
+        def mark_attempt(in_flight: bool) -> None:
+            state.final_promote_attempted = in_flight
+
+        self._promote(
             "promote_final",
-            [
-                "versions",
-                "deploy",
-                f"{state.new_final_id}@100%",
-                "--env",
-                config.wrangler_env,
-                "--yes",
-                "--message",
-                f"deploy-pipeline promote final ({config.sha})",
-            ],
+            state.new_final_id,
+            version_message.FINAL,
+            mark_attempt,
+            before_visibility_retry=recheck if guard is not None else None,
         )
         state.maint_live = False
         # Cleared on success so a failure in a later step - the windowless
@@ -584,9 +572,33 @@ class WorkerVersions:
             raise DeployAbort(1)
         return found.group(1)
 
-    def _require(self, label: str, args: Sequence[str]) -> None:
-        """Run a wrangler command whose failure aborts the deploy."""
-        result = self._runner.run(label, args)
+    def _promote(
+        self,
+        label: str,
+        version_id: str,
+        kind: str,
+        mark_attempt: Callable[[bool], None],
+        *,
+        before_visibility_retry: Callable[[], None] | None = None,
+    ) -> None:
+        result = self._runner.run_version(
+            label,
+            "deploy",
+            version_id,
+            [
+                "--env",
+                self._config.wrangler_env,
+                "--yes",
+                "--message",
+                f"deploy-pipeline promote {kind} ({self._config.sha})",
+            ],
+            before_visibility_retry=before_visibility_retry,
+            mark_attempt=mark_attempt,
+        )
+        self._require(result)
+
+    @staticmethod
+    def _require(result: wrangler_runner.WranglerResult) -> None:
         wrangler_runner.write_stdout(result.stdout)
         if not result.ok:
             raise DeployAbort(result.returncode)

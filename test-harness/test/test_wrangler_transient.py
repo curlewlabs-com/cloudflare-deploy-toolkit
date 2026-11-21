@@ -290,6 +290,15 @@ class VersionNotFound(ClassifierCase):
             )
         )
 
+    def test_promotion_matches_the_target_in_a_colored_api_error(self) -> None:
+        error = VERSION_NOT_FOUND.replace("[ERROR]", "\x1b[31m[ERROR]\x1b[0m").replace(
+            "failed.\n", "failed.\n\n"
+        )
+        self.assertTrue(wrangler_transient.missing_promotion_target(error, "<id>"))
+        self.assertFalse(
+            wrangler_transient.missing_promotion_target(error, "another-id")
+        )
+
     def test_a_longer_code_is_not_this_one(self) -> None:
         # Guards the token boundary: digits continuing the code make it another
         # error, which the opt-in must not retry.
