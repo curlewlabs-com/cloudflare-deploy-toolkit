@@ -227,8 +227,32 @@ if [ -n "${MOCK_TRANSIENT_FAIL_AT:-}" ]; then
                 echo "[ERROR] fetch failed" >&2
                 exit 1
                 ;;
-            version_not_found)
-                echo "[ERROR] A request to the Cloudflare API failed." >&2
+            post_promote_error | submission_not_found)
+                # Wrangler can print the annotation on stdout and then fail
+                # after changing traffic, while finishing a different API call.
+                printf '%s\n' "${3%@100%}" >"$PROMOTED_FILE"
+                if [ "$_mt_pattern" = submission_not_found ]; then
+                    echo "Version message: fetch failed"
+                    echo "[ERROR] A request to the Cloudflare API (/accounts/example/workers/scripts/worker/deployments) failed." >&2
+                    echo "  The requested Worker version could not be found. [code: 100146]" >&2
+                    exit 1
+                fi
+                echo "Version message: [code: 100146]"
+                echo "[ERROR] A request to the Cloudflare API for deployment metadata failed." >&2
+                exit 1
+                ;;
+            version_not_found | version_not_found_superseded | version_not_found_with_annotation | version_not_found_unreadable)
+                if [ "$_mt_pattern" = version_not_found_with_annotation ]; then
+                    echo "Version message: fetch failed"
+                elif [ "$_mt_pattern" = version_not_found_unreadable ]; then
+                    : >"$MOCK_LOG_FILE.unreadable_deployments"
+                fi
+                if [ "$_mt_pattern" = version_not_found_superseded ]; then
+                    # Another controller took traffic during the rejected promotion.
+                    printf '%s\n' "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" >"$PROMOTED_FILE"
+                fi
+                [ "${WRANGLER_LOG:-}" != none ] || exit 1
+                echo "[ERROR] A request to the Cloudflare API (/accounts/example/workers/scripts/worker/versions/${3%@100%}) failed." >&2
                 echo "  The requested Worker version could not be found, please check the ID being passed and try again. [code: 100146]" >&2
                 exit 1
                 ;;
@@ -336,6 +360,10 @@ LOCK_STATE=$(cat "$LOCK_STATE_FILE")
 # mirroring wrangler's quiet-success behavior for these commands.
 case "$STEP" in
 deployments_list)
+    if [ -f "$MOCK_LOG_FILE.unreadable_deployments" ]; then
+        echo "[ERROR] Cannot read the serving set" >&2
+        exit 1
+    fi
     if [ -s "$PROMOTED_FILE" ] && [ "${MOCK_SERVING_AFTER_PROMOTE:-}" = "split" ]; then
         printf '[{"id":"00000000-0000-0000-0000-cccccccccccc","versions":[{"version_id":"%s","percentage":50},{"version_id":"00000000-0000-0000-0000-000000000000","percentage":50}]}]\n' "$(cat "$PROMOTED_FILE")"
     elif [ -s "$PROMOTED_FILE" ]; then

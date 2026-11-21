@@ -143,6 +143,83 @@ line_of() {
   assert_step_called promote_final
 }
 
+# A successful runtime read does not guarantee the deploy endpoint can see the
+# same version yet. Both bodies must finish without entering recovery.
+@test "maintenance promotion waits for the uploaded version after runtime verification" {
+  run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
+    DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_maint:1:version_not_found
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promote_maint: succeeded on attempt 2/2"* ]]
+  assert_step_called unlock
+  refute_step_called wrangler_rollback
+}
+
+@test "windowless final promotion waits for the uploaded version after runtime verification" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
+    DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promote_final: succeeded on attempt 2/2"* ]]
+  refute_step_called wrangler_rollback
+}
+
+@test "a silent failed promotion keeps its rollback obligation" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless WRANGLER_LOG=none \
+    DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  assert_step_called wrangler_rollback
+}
+
+@test "windowless retry leaves an intervening deployment serving" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+    MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_superseded
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Serving set changed mid-deploy"* ]]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  refute_step_called wrangler_rollback
+}
+
+@test "windowless retry leaves an intervening split serving" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+    MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_superseded MOCK_SERVING_AFTER_PROMOTE=split
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  refute_step_called wrangler_rollback
+}
+
+@test "a missing-version code in an annotation preserves recovery after traffic changes" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+    MOCK_TRANSIENT_FAIL_AT=promote_final:1:post_promote_error
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  assert_step_called wrangler_rollback
+}
+
+@test "a missing-version error from submission keeps rollback armed" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+    MOCK_TRANSIENT_FAIL_AT=promote_final:1:submission_not_found
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  assert_step_called wrangler_rollback
+}
+
+@test "an unreadable windowless recheck after a rejected promotion does not overwrite traffic" {
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless \
+    DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_unreadable
+  [ "$status" -ne 0 ]
+  [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
+  refute_step_called wrangler_rollback
+}
+
+@test "exhausted final lookups leave only maintenance live during windowed recovery" {
+  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:2:version_not_found \
+    MOCK_FAIL_AT=wrangler_rollback
+  [ "$status" -ne 0 ]
+  assert_step_called tt_restore
+  assert_step_called wrangler_rollback
+  assert_step_called unlock
+}
+
 @test "expected_runtime_unreadable_document: a document stating no runtime says so and is not a mismatch" {
   # MOCK_VERSION_MESSAGE answers with annotations only: no resources at all.
   run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" "MOCK_VERSION_MESSAGE=deploy-pipeline maintenance (smoketest)"

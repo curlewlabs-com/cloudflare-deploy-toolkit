@@ -28,6 +28,7 @@ MODULE = (
 
 sys.path.insert(0, str(MODULE.parent))
 
+import deploy_state
 import deploy_versions
 import wrangler_runner
 
@@ -73,7 +74,10 @@ class ReachesWrangler(unittest.TestCase):
 NOT_FOUND = wrangler_runner.WranglerResult(
     returncode=1,
     stdout="",
-    stderr="The requested Worker version could not be found. [code: 100146]\n",
+    stderr=(
+        "[ERROR] A request to the Cloudflare API (/accounts/example/workers/scripts/worker/versions/id) failed.\n"
+        "  The requested Worker version could not be found. [code: 100146]\n"
+    ),
 )
 FOUND = wrangler_runner.WranglerResult(returncode=0, stdout="{}", stderr="")
 
@@ -86,7 +90,11 @@ class ScriptedRunner(wrangler_runner.WranglerRunner):
         answers: list[wrangler_runner.WranglerResult],
         backoff: Sequence[int] | None = (0, 0, 0),
     ) -> None:
-        super().__init__(wrangler=["wrangler"], backoff_seconds=backoff)
+        super().__init__(
+            wrangler=["wrangler"],
+            backoff_seconds=backoff,
+            state=deploy_state.PipelineState(new_final_id="id"),
+        )
         self._answers = answers
         self.attempts = 0
 
@@ -97,16 +105,13 @@ class ScriptedRunner(wrangler_runner.WranglerRunner):
 
 
 class UploadVisibility(unittest.TestCase):
-    """A caller widening the roster for one call, as the runtime check's
-    read-back of its own upload does for the version not-found."""
+    """Only the run's uploaded versions can spend the visibility budget."""
 
     def test_uploaded_version_appears_after_ordinary_retries_are_spent(self) -> None:
         runner = ScriptedRunner([NOT_FOUND] * 5 + [FOUND], backoff=None)
         with patch("wrangler_runner.time.sleep") as sleep:
             self.assertEqual(
-                deploy_versions.view_version(
-                    runner, "staging", "id", just_uploaded=True
-                ),
+                deploy_versions.view_version(runner, "staging", "id"),
                 {},
             )
         # The incident exhausted the old wall-clock window as well as its attempts.
@@ -116,41 +121,76 @@ class UploadVisibility(unittest.TestCase):
     def test_permanently_invisible_upload_still_aborts(self) -> None:
         runner = ScriptedRunner([NOT_FOUND] * 6, backoff=None)
         with patch("wrangler_runner.time.sleep"):
-            self.assertIsNone(
-                deploy_versions.view_version(
-                    runner, "staging", "id", just_uploaded=True
-                )
-            )
+            self.assertIsNone(deploy_versions.view_version(runner, "staging", "id"))
 
     def test_transport_failure_cannot_spend_the_extra_visibility_budget(self) -> None:
         transport = wrangler_runner.WranglerResult(1, "", "fetch failed")
         runner = ScriptedRunner([NOT_FOUND] * 4 + [transport], backoff=None)
         with patch("wrangler_runner.time.sleep"):
-            self.assertIsNone(
-                deploy_versions.view_version(
-                    runner, "staging", "id", just_uploaded=True
-                )
-            )
+            self.assertIsNone(deploy_versions.view_version(runner, "staging", "id"))
         self.assertEqual(runner.retries, 4)
 
-    def test_the_widened_error_is_retried_until_it_clears(self) -> None:
-        # Guards the deploy that failed on a read-back a second after upload.
-        runner = ScriptedRunner([NOT_FOUND, FOUND])
-        result = runner.run("versions_view", [], just_uploaded=True)
+    def test_promotion_can_outlast_the_ordinary_retry_budget(self) -> None:
+        # The deploy endpoint can lag even after the read endpoint caught up.
+        runner = ScriptedRunner([NOT_FOUND] * 5 + [FOUND], backoff=None)
+        with patch("wrangler_runner.time.sleep"):
+            result = runner.run_version("promote_final", "deploy", "id", [])
         self.assertTrue(result.ok)
-        self.assertEqual(runner.attempts, 2)
+        self.assertEqual(runner.attempts, 6)
 
-    def test_the_widening_keeps_the_attempt_budget(self) -> None:
-        # A version that never appears must still end the read, not hang it.
+    def test_promotion_respects_an_explicit_retry_budget(self) -> None:
+        # A permanently missing version must return control to recovery.
         runner = ScriptedRunner([NOT_FOUND] * 4)
-        result = runner.run("versions_view", [], just_uploaded=True)
+        result = runner.run_version("promote_final", "deploy", "id", [])
         self.assertFalse(result.ok)
         self.assertEqual(runner.attempts, 4)
 
-    def test_without_the_widening_it_is_not_retried(self) -> None:
+    def test_lost_response_preserves_in_flight_recovery(self) -> None:
+        runner = ScriptedRunner(
+            [wrangler_runner.WranglerResult(1, "", "fetch failed"), NOT_FOUND]
+        )
+
+        def guard() -> None:
+            self.fail(
+                "Cannot treat an earlier lost promotion response as a rejected attempt"
+            )
+
+        in_flight: list[bool] = []
+        self.assertFalse(
+            runner.run_version(
+                "promote",
+                "deploy",
+                "id",
+                [],
+                before_visibility_retry=guard,
+                mark_attempt=in_flight.append,
+            ).ok
+        )
+        self.assertTrue(in_flight[-1])
+        self.assertEqual(runner.attempts, 2)
+
+    def test_ambiguous_guarded_retry_enters_recovery(self) -> None:
+        runner = ScriptedRunner(
+            [NOT_FOUND, wrangler_runner.WranglerResult(1, "", "fetch failed")]
+        )
+        in_flight: list[bool] = []
+        self.assertFalse(
+            runner.run_version(
+                "promote",
+                "deploy",
+                "id",
+                [],
+                before_visibility_retry=lambda: None,
+                mark_attempt=in_flight.append,
+            ).ok
+        )
+        self.assertEqual(runner.attempts, 2)
+        self.assertTrue(in_flight[-1])
+
+    def test_previous_version_not_found_is_final(self) -> None:
         # Every other read of a version id takes not-found as the answer.
         runner = ScriptedRunner([NOT_FOUND, FOUND])
-        self.assertFalse(runner.run("versions_view", []).ok)
+        self.assertIsNone(deploy_versions.view_version(runner, "staging", "old-id"))
         self.assertEqual(runner.attempts, 1)
 
 

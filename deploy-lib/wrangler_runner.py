@@ -37,8 +37,10 @@ import random
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Literal
 
+import deploy_state
 import retry_sleep
 import wrangler_transient
 
@@ -144,8 +146,8 @@ def invoke(argv: Sequence[str]) -> WranglerResult:
 
 
 DEFAULT_BACKOFF = (2, 5, 15)
-# An uploaded version has taken longer to become readable than the ordinary
-# retry budget. These waits buy visibility before promotion or a write pause.
+# The view and deploy endpoints can see a new version at different times,
+# even after the ordinary retry budget has elapsed.
 UPLOAD_VISIBILITY_BACKOFF = (*DEFAULT_BACKOFF, 30, 60)
 
 
@@ -153,8 +155,13 @@ class WranglerRunner:
     """The retry loop, its schedule, and the run's total retry count."""
 
     def __init__(
-        self, *, wrangler: Sequence[str], backoff_seconds: Sequence[int] | None
+        self,
+        *,
+        wrangler: Sequence[str],
+        backoff_seconds: Sequence[int] | None,
+        state: deploy_state.PipelineState,
     ) -> None:
+        self._state = state
         self._wrangler = tuple(wrangler)
         self._backoff = (
             DEFAULT_BACKOFF if backoff_seconds is None else tuple(backoff_seconds)
@@ -169,39 +176,54 @@ class WranglerRunner:
         """Retries performed across the run, for the diagnostics bundle."""
         return self._retries
 
-    def run(
+    def run(self, label: str, args: Sequence[str]) -> WranglerResult:
+        return self._run(label, args, just_uploaded=False)
+
+    def run_version(
+        self,
+        label: str,
+        operation: Literal["view", "deploy"],
+        version_id: str,
+        options: Sequence[str],
+        *,
+        before_visibility_retry: Callable[[], None] | None = None,
+        mark_attempt: Callable[[bool], None] | None = None,
+    ) -> WranglerResult:
+        """Tie the visibility budget to the same id that wrangler receives."""
+        target = f"{version_id}@100%" if operation == "deploy" else version_id
+        # Once relocation reaches promotion it has fenced both databases and
+        # must recover forward. A propagation wait here would extend that pause.
+        uploaded = self._state.uploaded_version(version_id)
+        if operation == "deploy" and self._state.relocation_promote_reached:
+            uploaded = False
+        return self._run(
+            label,
+            ["versions", operation, target, *options],
+            just_uploaded=uploaded,
+            promotion_id=version_id if operation == "deploy" else None,
+            before_visibility_retry=before_visibility_retry,
+            mark_attempt=mark_attempt,
+        )
+
+    def _run(
         self,
         label: str,
         args: Sequence[str],
         *,
-        just_uploaded: bool = False,
+        just_uploaded: bool,
+        before_visibility_retry: Callable[[], None] | None = None,
+        mark_attempt: Callable[[bool], None] | None = None,
+        promotion_id: str | None = None,
     ) -> WranglerResult:
-        """`wrangler <args>` with retries. Returns the terminal attempt.
-
-        A caller reading the ID its upload just returned may spend the
-        visibility budget on Cloudflare's version-not-found response.
-        """
-        return self.run_command(
-            label, [*self._wrangler, *args], just_uploaded=just_uploaded
-        )
-
-    def run_command(
-        self,
-        label: str,
-        argv: Sequence[str],
-        *,
-        just_uploaded: bool = False,
-    ) -> WranglerResult:
-        """The loop, over an argv the caller assembled in full.
-
-        Split from `run` because the recovery path and the steps call
-        wrangler, while the hook commands are not wrangler at all and must not
-        be retried against a roster written for Cloudflare's error text.
-        """
+        argv = [*self._wrangler, *args]
         total = len(self._backoff) + 1
         attempt = 1
+        ambiguous_attempt = False
+        rechecked_promotion = False
 
         while True:
+            if mark_attempt is not None:
+                mark_attempt(True)
             result = self._invoke(argv)
 
             if result.ok:
@@ -212,12 +234,52 @@ class WranglerRunner:
                         file=sys.stderr,
                         flush=True,
                     )
-                    self._retries += attempt - 1
                 return result
 
-            waiting_for_visibility = (
-                just_uploaded
-                and wrangler_transient.is_version_not_found(result.combined)
+            missing_error = (
+                promotion_id is not None
+                and wrangler_transient.is_version_not_found(result.stderr)
+            )
+            target_missing = (
+                missing_error
+                and promotion_id is not None
+                and wrangler_transient.missing_promotion_target(
+                    result.stderr, promotion_id
+                )
+            )
+            if target_missing:
+                # Wrangler could not resolve the target before submitting this
+                # attempt. A lost response from an earlier attempt still counts.
+                if mark_attempt is not None and not ambiguous_attempt:
+                    mark_attempt(False)
+                if not just_uploaded or (before_visibility_retry and ambiguous_attempt):
+                    write_stderr(result.stderr)
+                    write_stderr(
+                        f"[deploy-retry] {label}: target lookup failed, entering recovery\n"
+                    )
+                    return result
+
+            elif missing_error:
+                # A different request can fail after changing traffic. Progress
+                # text on stdout cannot turn that verdict into a safe resend.
+                write_stderr(result.stderr)
+                write_stderr(
+                    f"[deploy-retry] {label}: unconfirmed target lookup, entering recovery\n"
+                )
+                return result
+            elif rechecked_promotion:
+                # The guarded retry may have applied. Re-sending after another
+                # wait could overwrite traffic the serving check never saw.
+                write_stderr(result.stderr)
+                write_stderr(
+                    f"[deploy-retry] {label}: guarded retry failed, entering recovery\n"
+                )
+                return result
+
+            waiting_for_visibility = just_uploaded and (
+                target_missing
+                if promotion_id is not None
+                else wrangler_transient.is_version_not_found(result.combined)
             )
             if not waiting_for_visibility and not wrangler_transient.is_transient(
                 result.combined
@@ -229,7 +291,6 @@ class WranglerRunner:
                         file=sys.stderr,
                         flush=True,
                     )
-                    self._retries += attempt - 1
                 else:
                     print(
                         f"[deploy-retry] {label}: non-retryable error "
@@ -251,13 +312,13 @@ class WranglerRunner:
                     file=sys.stderr,
                     flush=True,
                 )
-                self._retries += attempt - 1
                 write_stderr(result.stderr)
                 return result
 
             wait = retry_sleep.sleep_seconds(
                 schedule[attempt - 1], retry_sleep.draw_jitter(random.SystemRandom())
             )
+            ambiguous_attempt |= not waiting_for_visibility
             print(
                 f"[deploy-retry] {label}: attempt {attempt}/{total} failed with "
                 f"transient error (exit={result.returncode}), retrying in {wait}s",
@@ -268,6 +329,10 @@ class WranglerRunner:
             # reading the CI log sees whether the blip changed shape.
             write_stderr(result.stderr)
             time.sleep(wait)
+            if waiting_for_visibility and before_visibility_retry is not None:
+                before_visibility_retry()
+                rechecked_promotion = True
+            self._retries += 1
             attempt += 1
 
     def _invoke(self, argv: Sequence[str]) -> WranglerResult:

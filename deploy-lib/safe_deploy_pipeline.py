@@ -232,8 +232,12 @@ class Pipeline:
 
         self._versions.upload_final_version()
         self._versions.verify_final_runtime()
-        self._versions.verify_single_serving_version("before the final promotion")
-        self._versions.promote_final_version()
+
+        def guard_promotion() -> None:
+            self._versions.verify_single_serving_version("before the final promotion")
+
+        guard_promotion()
+        self._versions.promote_final_version(guard_promotion)
 
         if self._postflight_check() != 0:
             emit("")
@@ -587,7 +591,7 @@ def build(
         step_summary_path=config.github_step_summary,
     )
     runner = wrangler_runner.WranglerRunner(
-        wrangler=config.wrangler, backoff_seconds=config.retry_backoff
+        wrangler=config.wrangler, backoff_seconds=config.retry_backoff, state=state
     )
     lock = deploy_lock.LockReader(
         wrangler=config.wrangler,
