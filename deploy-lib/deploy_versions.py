@@ -31,8 +31,9 @@ from deploy_state import DeployAbort
 VERSION_ID_LINE = re.compile(r"Worker Version ID: ([0-9a-f-]+)")
 
 SERVING_REFUSAL = (
-    "[FAIL] Verify the deployment history before retrying. Provision a new Worker "
-    "separately. For a confirmed traffic split, complete or roll back the gradual "
+    "[FAIL] Verify the deployment history before retrying. Only provision a Worker "
+    "separately after confirming it has never been deployed. For a confirmed "
+    "traffic split, complete or roll back the gradual "
     "rollout so one version serves 100%."
 )
 

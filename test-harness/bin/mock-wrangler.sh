@@ -93,28 +93,24 @@ if [ ! -d "$FIXTURE_DIR" ]; then
 fi
 
 PROMOTED_FILE="$MOCK_LOG_FILE.promoted"
-# A promotion is recognized only when it spends the uploaded fixture's ID.
-case "$*" in
-*"deployments list"*"--json"*)
+# The log distinguishes attempts from the fixture validation below.
+case "${1:-} ${2:-}" in
+"deployments list")
     STEP=deployments_list
     ;;
-*"versions view"*)
+"versions view")
     STEP=versions_view
     ;;
-*"versions upload"*)
+"versions upload")
     STEP=upload_final
     ;;
-*"triggers deploy"*)
+"triggers deploy")
     STEP=triggers
     ;;
-*"versions deploy"*)
-    if [ "${1:-} ${2:-} ${3:-}" = "versions deploy 22222222-2222-2222-2222-222222222222@100%" ]; then
-        STEP=promote_final
-    else
-        STEP=other
-    fi
+"versions deploy")
+    STEP=promote_final
     ;;
-*"rollback"*)
+"rollback "*)
     STEP=wrangler_rollback
     ;;
 *)
@@ -123,6 +119,26 @@ case "$*" in
 esac
 
 echo "$STEP $*" >>"$MOCK_LOG_FILE"
+
+# Every promotion attempt must appear in no-promotion assertions, including
+# a malformed request. Only the exact uploaded version can advance serving state.
+if [ "$STEP" = promote_final ]; then
+    if [ "${1:-} ${2:-} ${3:-}" != "versions deploy 22222222-2222-2222-2222-222222222222@100%" ]; then
+        echo "mock-wrangler: unexpected promotion target" >&2
+        exit 73
+    fi
+    (
+        shift 3
+        for argument in "$@"; do
+            case "$argument" in
+            *@*%)
+                echo "mock-wrangler: unexpected additional promotion target" >&2
+                exit 73
+                ;;
+            esac
+        done
+    )
+fi
 
 # Inject failure if requested. Exit 73 is arbitrary but distinct from any real
 # wrangler exit code we care about, making mock-injected failures easy to spot

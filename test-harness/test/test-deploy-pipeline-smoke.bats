@@ -277,6 +277,19 @@ run_wrapper_expecting() {
   refute_database_command
 }
 
+@test "unreadable history stops before mutation and requires verification" {
+  fixtures="$BATS_TEST_TMPDIR/broken-history"
+  cp -R "$FIXTURE_DIR" "$fixtures"
+  printf '%s\n' 'not a deployment history' > "$fixtures/deployments_list.json"
+  export FIXTURE_DIR="$fixtures"
+  run_wrapper
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not valid JSON"* ]]
+  [[ "$output" == *"after confirming it has never been deployed"* ]]
+  refute_step_called triggers
+  refute_step_called promote_final
+}
+
 @test "windowless_split_serving_refuses: a gradual split aborts before any mutation" {
   # A serving set that is not exactly one version at 100% must refuse the
   # windowless body outright - nothing uploaded, no triggers pushed.

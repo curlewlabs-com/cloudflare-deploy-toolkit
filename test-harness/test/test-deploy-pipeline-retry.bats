@@ -264,9 +264,9 @@ assert_step_called_n_times() {
 # a terminal-attempt result distinct from the transcript, and the version
 # ID taken from it is the one used downstream.
 #
-# What the assertion rests on: mock-wrangler classifies a `versions deploy`
-# call as `promote_final` only when the version-id argument contains the
-# final slot UUID. Only the terminal upload's ID may be promoted.
+# What the assertion rests on: mock-wrangler records every `versions deploy`
+# call as `promote_final` but only the terminal upload ID at full traffic
+# can succeed.
 @test "upload_final_retry_keeps_right_version_id: terminal attempt's ID is what gets promoted" {
   run_wrapper MOCK_TRANSIENT_FAIL_AT=upload_final:2:upload_id_then_fetch_failed
   [ "$status" -eq 0 ]

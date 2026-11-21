@@ -28,3 +28,12 @@ setup() {
     return 1
   fi
 }
+
+@test "rejected split promotion is logged and leaves serving state alone" {
+  export FIXTURE_DIR="$BATS_TEST_TMPDIR" MOCK_LOG_FILE="$BATS_TEST_TMPDIR/calls.log"
+  run "$HARNESS_DIR/bin/mock-wrangler.sh" versions deploy \
+    22222222-2222-2222-2222-222222222222@100% 99999999-9999-9999-9999-999999999999@50%
+  [ "$status" -ne 0 ]
+  grep -q '^promote_final versions deploy ' "$MOCK_LOG_FILE"
+  [ ! -e "$MOCK_LOG_FILE.promoted" ]
+}

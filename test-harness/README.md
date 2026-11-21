@@ -142,7 +142,8 @@ test driver. They're defined in `lib/test-slots.sh`:
   `.[0]` of the latest/prior slice - second-to-latest, forcing distinct latest
   and prior fixture entries
 - **`WRANGLER_HARNESS_FINAL_UUID`** - `22222222-2222-2222-2222-222222222222`:
-  Returned by upload-final, mock matches by `*22222222*` substring
+  Returned by upload-final. The mock records every promotion attempt and accepts
+  only this complete target at full traffic.
 
 Why these specific values: they're trivially distinguishable (regex-wise) and
 the all-zero / all-9 / all-1 / all-2 patterns make it impossible to confuse a
