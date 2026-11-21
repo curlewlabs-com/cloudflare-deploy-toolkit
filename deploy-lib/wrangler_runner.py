@@ -38,9 +38,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from typing import Literal
 
-import deploy_state
 import retry_sleep
 import wrangler_transient
 
@@ -159,9 +157,7 @@ class WranglerRunner:
         *,
         wrangler: Sequence[str],
         backoff_seconds: Sequence[int] | None,
-        state: deploy_state.PipelineState,
     ) -> None:
-        self._state = state
         self._wrangler = tuple(wrangler)
         self._backoff = (
             DEFAULT_BACKOFF if backoff_seconds is None else tuple(backoff_seconds)
@@ -176,41 +172,12 @@ class WranglerRunner:
         """Retries performed across the run, for the diagnostics bundle."""
         return self._retries
 
-    def run(self, label: str, args: Sequence[str]) -> WranglerResult:
-        return self._run(label, args, just_uploaded=False)
-
-    def run_version(
-        self,
-        label: str,
-        operation: Literal["view", "deploy"],
-        version_id: str,
-        options: Sequence[str],
-        *,
-        before_visibility_retry: Callable[[], None] | None = None,
-        mark_attempt: Callable[[bool], None] | None = None,
-    ) -> WranglerResult:
-        """Tie the visibility budget to the same id that wrangler receives."""
-        target = f"{version_id}@100%" if operation == "deploy" else version_id
-        # Once relocation reaches promotion it has fenced both databases and
-        # must recover forward. A propagation wait here would extend that pause.
-        uploaded = self._state.uploaded_version(version_id)
-        if operation == "deploy" and self._state.relocation_promote_reached:
-            uploaded = False
-        return self._run(
-            label,
-            ["versions", operation, target, *options],
-            just_uploaded=uploaded,
-            promotion_id=version_id if operation == "deploy" else None,
-            before_visibility_retry=before_visibility_retry,
-            mark_attempt=mark_attempt,
-        )
-
-    def _run(
+    def run(
         self,
         label: str,
         args: Sequence[str],
         *,
-        just_uploaded: bool,
+        just_uploaded: bool = False,
         before_visibility_retry: Callable[[], None] | None = None,
         mark_attempt: Callable[[bool], None] | None = None,
         promotion_id: str | None = None,

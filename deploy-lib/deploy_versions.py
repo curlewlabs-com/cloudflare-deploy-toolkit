@@ -53,6 +53,7 @@ def view_version(
     runner: wrangler_runner.WranglerRunner,
     wrangler_env: str,
     version_id: str,
+    state: deploy_state.PipelineState,
 ) -> object | None:
     """One version's document, or None when it could not be read.
 
@@ -64,8 +65,10 @@ def view_version(
     failed call, and this function's own line for a call that succeeded without
     printing a document, which can leave nothing on stderr at all.
     """
-    result = runner.run_version(
-        "versions_view", "view", version_id, ["--json", "--env", wrangler_env]
+    result = runner.run(
+        "versions_view",
+        ["versions", "view", version_id, "--json", "--env", wrangler_env],
+        just_uploaded=state.uploaded_version(version_id),
     )
     if not result.ok:
         return None
@@ -177,11 +180,9 @@ class WorkerVersions:
     def verify_single_serving_version(self, context: str) -> None:
         """TOCTOU re-check: the serving set must still be the recorded version.
 
-        Runs immediately before the first DB mutation and immediately before the
-        final promotion. Before the mutation an abort leaves everything
-        untouched; before the promotion it leaves the DB migrated and the old
-        version serving - the fix-forward state the consumer's preflight
-        admitted. A deployment landing in the seconds between a re-check and the
+        Before a windowless DB mutation, a mismatch stops the migration. At
+        promotion or a visibility retry, the DB is already migrated. Aborting
+        leaves any intervening deployment or split in place. A deployment landing in the seconds between a re-check and the
         action it guards is the documented operational exclusion: another
         control plane moved it, and the next sanctioned deploy's preflight
         detects the result.
@@ -275,7 +276,9 @@ class WorkerVersions:
         if expected is None:
             return
         self._reporter.step(f"Verify the uploaded version's runtime ({config.env})")
-        document = view_version(self._runner, config.wrangler_env, version_id)
+        document = view_version(
+            self._runner, config.wrangler_env, version_id, self._state
+        )
         if document is None:
             emit_error(
                 f"[FAIL] RUNTIME NOT CHECKED: reading uploaded version {version_id} "
@@ -348,9 +351,15 @@ class WorkerVersions:
         # obligation, and a stale flag would roll back a deploy that completed.
         state.maint_promote_attempted = False
 
-    def promote_final_version(self, guard: Callable[[], None] | None = None) -> None:
+    def promote_final_version(self) -> None:
         config, state = self._config, self._state
-        self._reporter.step(f"Promote final version to 100% ({config.env})")
+
+        def prepare_promotion() -> None:
+            if config.mode == deploy_config.WINDOWLESS:
+                self.verify_single_serving_version("before the final promotion")
+            self._reporter.step(f"Promote final version to 100% ({config.env})")
+
+        prepare_promotion()
 
         # Marked in flight BEFORE the call, as for the maintenance promote:
         # `versions deploy @100%` can apply server-side and still return
@@ -359,11 +368,6 @@ class WorkerVersions:
         # and leave the new, maybe-live version up while reporting "old version
         # still serving". Rollback to a pinned version is idempotent, so a
         # promote that did NOT apply just no-ops.
-        def recheck() -> None:
-            if guard is not None:
-                guard()
-            self._reporter.step(f"Promote final version to 100% ({config.env})")
-
         def mark_attempt(in_flight: bool) -> None:
             state.final_promote_attempted = in_flight
 
@@ -372,7 +376,9 @@ class WorkerVersions:
             state.new_final_id,
             version_message.FINAL,
             mark_attempt,
-            before_visibility_retry=recheck if guard is not None else None,
+            before_visibility_retry=(
+                prepare_promotion if config.mode == deploy_config.WINDOWLESS else None
+            ),
         )
         state.maint_live = False
         # Cleared on success so a failure in a later step - the windowless
@@ -502,7 +508,9 @@ class WorkerVersions:
         the bind holds at the capture only.
         """
         expected = self._config.expected_serving_sha
-        document = view_version(self._runner, self._config.wrangler_env, version_id)
+        document = view_version(
+            self._runner, self._config.wrangler_env, version_id, self._state
+        )
         if document is None:
             emit_error(
                 f"[FAIL] Could not read serving version {version_id} (see above), "
@@ -581,17 +589,25 @@ class WorkerVersions:
         *,
         before_visibility_retry: Callable[[], None] | None = None,
     ) -> None:
-        result = self._runner.run_version(
+        result = self._runner.run(
             label,
-            "deploy",
-            version_id,
             [
+                "versions",
+                "deploy",
+                f"{version_id}@100%",
                 "--env",
                 self._config.wrangler_env,
                 "--yes",
                 "--message",
                 f"deploy-pipeline promote {kind} ({self._config.sha})",
             ],
+            # The relocation has fenced writes. A missing target must return
+            # to forward recovery without a toolkit propagation wait.
+            just_uploaded=(
+                self._config.mode != deploy_config.RELOCATION
+                and self._state.uploaded_version(version_id)
+            ),
+            promotion_id=version_id,
             before_visibility_retry=before_visibility_retry,
             mark_attempt=mark_attempt,
         )
