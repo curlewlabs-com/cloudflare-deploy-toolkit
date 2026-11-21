@@ -2,7 +2,7 @@
 
 Test-time tooling for shell scripts that orchestrate Cloudflare Workers deploys
 via the `wrangler` CLI. Lets you exercise every documented failure path of your
-deploy script (cron-limit error, DB-lock failure, migration failure, postflight
+deploy script (cron-limit error, migration failure, postflight
 failure, etc.) without ever calling real wrangler.
 
 ## How it fits together
@@ -34,9 +34,7 @@ failure, etc.) without ever calling real wrangler.
         |  consumer's test/fixtures/wrangler/          |
         |  +-- deployments_list.json   (parsed by jq)  |
         |  +-- versions_view.json      (serving build) |
-        |  +-- upload_maint.txt        (Worker Ver ID) |
         |  +-- upload_final.txt        (Worker Ver ID) |
-        |  +-- bookmark.json           (parsed by jq)  |
         |  +-- triggers.txt            (sanitized)     |
         |  +-- *.txt                   (empty markers) |
         +----------------------------------------------+
@@ -93,19 +91,11 @@ cases are.
 
 Toolkit self-tests, run in the toolkit's CI by `test/check.sh`:
 
-- **The windowed and windowless bodies' order, binding, and recovery**
-  (`test-deploy-pipeline-smoke.bats`) - the happy path runs every step in order
-  on each body, the serving-build bind and the split-serving refusal abort
-  before any mutation, and Worker rollback and full D1/Worker/unlock recovery
-  fire at the right state-machine boundaries
-- **The uploaded-runtime check** (`test-deploy-pipeline-runtime.bats`) - the
-  read-back of an upload comes before any window, pause, or promote on the
-  windowed and windowless bodies, each refusal names its cause so a failed read
-  never reads as a mismatch, and an unset `DEPLOY_EXPECTED_RUNTIME` makes no
-  call
-- **The relocation body** (`test-deploy-pipeline-relocation.bats`) - its
-  ordering, the runtime refusal before the source is fenced included, and the
-  source and target lock states between its failure boundaries
+- **Deploy order and recovery** (`test-deploy-pipeline-smoke.bats`) - the
+  serving set, commit binding, migration order and rollback obligations.
+- **The uploaded runtime** (`test-deploy-pipeline-runtime.bats`) - an
+  unreadable or mismatched upload must never receive traffic.
+
 - **The classified-transient retry** (`test-deploy-pipeline-retry.bats`) -
   recovers on representative allowlisted shapes, fails fast on non-retryable
   ones including the edge render whose header a 5xx and a 4xx share, exhausted
@@ -151,8 +141,6 @@ test driver. They're defined in `lib/test-slots.sh`:
 - **`WRANGLER_HARNESS_OLDER_UUID`** - `99999999-9999-9999-9999-999999999999`:
   `.[0]` of the latest/prior slice - second-to-latest, forcing distinct latest
   and prior fixture entries
-- **`WRANGLER_HARNESS_MAINT_UUID`** - `11111111-1111-1111-1111-111111111111`:
-  Returned by upload-maint, mock matches by `*11111111*` substring
 - **`WRANGLER_HARNESS_FINAL_UUID`** - `22222222-2222-2222-2222-222222222222`:
   Returned by upload-final, mock matches by `*22222222*` substring
 
@@ -170,7 +158,6 @@ not the OLDER slot" (which catches `.[0]` vs `.[-1]` regressions).
 1. **Capture fixtures** by writing your own `capture-wrangler-fixtures.sh` that
    sources `lib/capture-helpers.sh` and writes to your fixture directory. Your
    script needs to know:
-   - `WRANGLER_DB` - your D1 DB name
    - `--scrub-binding NAME` - the `wrangler.toml` binding names whose values are
      PII / environment-specific (one `--scrub-binding` per binding)
    - The output path for the captured fixtures
@@ -179,7 +166,8 @@ not the OLDER slot" (which catches `.[0]` vs `.[-1]` regressions).
    - Sets `WRANGLER=$HARNESS_DIR/bin/mock-wrangler.sh`
    - Sets `FIXTURE_DIR=$YOUR_FIXTURE_DIR`
    - Sets `MOCK_LOG_FILE=$BATS_TEST_TMPDIR/calls.log`
-   - Stubs its own hooks' database reads (`PREFLIGHT_CMD`, `MIGRATE_CMD`,
+   - Sets `DEPLOY_PIPELINE_MODE=windowless-v1` and stubs its own hooks'
+     database reads (`WINDOWLESS_PREFLIGHT_CMD`, `MIGRATE_CMD`,
      `POSTFLIGHT_CMD`): the mock answers only the calls the pipeline itself
      makes, and any other `wrangler` call reads as `other` and prints nothing
    - Has one `@test` per `MOCK_FAIL_AT` value (permanent failures) and asserts
@@ -213,8 +201,7 @@ above is for a wrapper that cannot be exercised against a real database.
 When to re-run:
 
 - After a wrangler version bump (`bunx wrangler --version` shows new value)
-- After a Cloudflare-side schema change to `deployments list --json` or
-  `d1 time-travel info --json`
+- After a Cloudflare-side schema change to `deployments list --json`
 - If `check-fixture-purity.sh` flags something the sanitizer should have caught
 - **Never on a regular cadence** - re-capturing on every PR creates
   change-detector noise on every wrangler bump
@@ -238,18 +225,6 @@ red flags and need code changes, not just a fixture update:
    moves, every capture refuses and no deploy starts.
 
 ## Test framework
-
-Relocation hook-timeout cases use `test/relocation_deadline.py` to order expiry
-after the hanging hook publishes its process IDs. The driver runs the real
-pipeline and expires the real subprocess wait; process-group termination and
-lock recovery remain production code. The setup backstop is deliberately
-separate from the timeout being asserted, so runner contention cannot spend the
-asserted budget before the fixture exists. Ordinary wrapper cases still cover
-the relocation's wall-clock budget between hooks. Its startup-cancellation mode
-sends a real termination signal after the hook publishes its process IDs but
-before the spawn call returns to the pipeline. The same process-liveness and
-source-fence assertions then cover cancellation before the parent can adopt the
-child, without relying on scheduler timing.
 
 The harness uses [bats-core](https://github.com/bats-core/bats-core) for its
 fixture- and pipeline-oriented self-tests and Python's `unittest` for the `bin/`

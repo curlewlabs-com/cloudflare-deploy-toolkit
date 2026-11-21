@@ -362,8 +362,8 @@ jobs:
         working-directory: <PROJECT>
         # CONSUMER: this is your safe-deploy wrapper. With the toolkit's
         # deploy-lib, the wrapper is ~30 lines of boilerplate plus a few
-        # lines per hook: it exports DEPLOY_DB_*, DEPLOY_WRANGLER_ENV_* and
-        # the PREFLIGHT_CMD / MIGRATE_CMD / POSTFLIGHT_CMD hook commands,
+        # lines per hook: it selects DEPLOY_PIPELINE_MODE=windowless-v1, exports
+        # DEPLOY_WRANGLER_ENV_* and the WINDOWLESS_PREFLIGHT_CMD / MIGRATE_CMD / POSTFLIGHT_CMD hook commands,
         # then runs safe_deploy_pipeline.py "$@". See deploy-lib/README.md
         # for the API and an inlined wrapper example.
         run: ./scripts/deploy-safe.sh "$DEPLOY_ENV" --sha "${DEPLOY_SHA::7}"

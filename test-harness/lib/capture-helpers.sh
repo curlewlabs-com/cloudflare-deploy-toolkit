@@ -5,10 +5,9 @@
 # Usage:
 #   . "$TOOLKIT/test-harness/lib/capture-helpers.sh"
 #   capture_deployments_list staging > fixtures/deployments_list.json
-#   capture_versions_upload_dry_run staging "fixture-capture maintenance" \
-#     --var "MAINTENANCE_MODE:true" \
-#     | "$SANITIZER" upload-maint --scrub-binding ACTIVITY_CHECK_TEST_UID \
-#     > fixtures/upload_maint.txt
+#   capture_versions_upload_dry_run staging "fixture-capture final" \
+#     | "$SANITIZER" upload-final --scrub-binding ACTIVITY_CHECK_TEST_UID \
+#     > fixtures/upload_final.txt
 #
 # Each helper wraps a single wrangler subcommand with the appropriate safety
 # flags (--dry-run where the subcommand supports it, --json where it returns
@@ -40,7 +39,7 @@ WRANGLER_HARNESS_BIN="${WRANGLER_HARNESS_BIN:-bunx wrangler}"
 # Every $WRANGLER_HARNESS_BIN call below is prefixed with CI=true to suppress
 # wrangler's "Cloudflare agent skills" banner, which prints to stdout under
 # agent runtimes (e.g. Claude Code) and would corrupt the --json output the
-# consumer pipes through jq (deployments list, time-travel info) or the
+# consumer pipes through jq (deployments list) or the
 # dry-run text the sanitizer parses. This library is sourced, so it must not
 # export CI (that would leak into the consumer's shell and its own hooks);
 # the prefix is scoped to each external wrangler process instead.
@@ -66,31 +65,16 @@ capture_deployments_list() {
     CI=true $WRANGLER_HARNESS_BIN deployments list --json --env "$env"
 }
 
-# capture_d1_time_travel_info <env> <db-name>
-# Calls `wrangler d1 time-travel info --json` and writes the raw JSON to
-# stdout. Read-only - time-travel info just returns the current bookmark.
-capture_d1_time_travel_info() {
-    _assert_staging_env capture_d1_time_travel_info "$1" || return 1
-    env="$1"
-    db_name="$2"
-    if [ -z "$db_name" ]; then
-        echo "capture_d1_time_travel_info: db_name required" >&2
-        return 1
-    fi
-    # shellcheck disable=SC2086
-    CI=true $WRANGLER_HARNESS_BIN d1 time-travel info "$db_name" --env "$env" --json
-}
-
 # capture_versions_upload_dry_run <env> <message> [extra wrangler args ...]
 # Calls `wrangler versions upload --dry-run` and writes combined stdout+stderr
 # to stdout. The dry-run flag means no version is created - wrangler compiles
 # the bundle and exits without uploading. The output contains the binding
 # list (most likely thing to drift between wrangler versions); the
 # `Worker Version ID:` line is NOT present in dry-run output, so consumers
-# must pipe through sanitize-wrangler-text.sh in upload-maint or upload-final
+# must pipe through sanitize-wrangler-text.sh in upload-final
 # mode to inject the synthetic line.
 #
-# Pass extra wrangler args (e.g. `--var MAINTENANCE_MODE:true`) after the
+# Pass extra wrangler args after the
 # message arg.
 capture_versions_upload_dry_run() {
     _assert_staging_env capture_versions_upload_dry_run "$1" || return 1
@@ -119,9 +103,7 @@ capture_triggers_deploy_dry_run() {
 # write_empty_fixtures <fixture-dir> <step1> <step2> ...
 # Creates empty marker files for steps where wrangler's output is not parsed
 # by any consumer. The mock just needs `cat` to succeed; the existence of
-# the file documents that the step was considered. Use for: lock, unlock,
-# triggers (if you want a marker instead of a captured fixture), promote_*,
-# tt_restore, wrangler_rollback.
+# the file documents successful operations with no parsed output.
 write_empty_fixtures() {
     fixture_dir="$1"
     shift

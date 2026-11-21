@@ -3,12 +3,8 @@
 # wrapper and the mock wrangler.
 #
 # A consumer's tests run at the runtime it configures, so an upload Cloudflare
-# records at any other must be refused before it serves - and before any window
-# or write pause opens, so a slow or failed read holds nothing paused. Each
-# refusal names its cause, because only a mismatch is a statement about the
-# runtime. The versions_view fixture records 2025-01-01 and no flags. The
-# relocation body's case lives with the relocation suite, which owns its lock
-# setup.
+# records at any other must be refused before it serves. A failed read and a
+# mismatch need different remedies.
 
 setup() {
   TEST_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)"
@@ -26,11 +22,6 @@ setup() {
   # test doesn't need a real D1 / bun / migration system.
   export MIGRATE_CMD="true"
   export POSTFLIGHT_CMD="true"
-  # Skip the real 15s in-flight drain sleep. mock-wrangler is
-  # deterministic and has no in-flight requests to drain, so the sleep
-  # adds no coverage - it just burns wall time in every case that
-  # reaches the drain step.
-  export DEPLOY_DRAIN_SECONDS=0
 
   # Real consumers run the wrapper from a directory containing a
   # wrangler config; mirror that here so the pipeline's wrangler-config
@@ -82,38 +73,16 @@ line_of() {
   refute_step_called versions_view
   [[ "$output" != *"Verify the uploaded version's runtime"* ]]
   : > "$CALLS_LOG"
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
   [ "$status" -eq 0 ]
   refute_step_called versions_view
 }
 
-@test "expected_runtime_matches_windowed: the maintenance upload is read back before the triggers and the promote" {
-  run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME"
-  [ "$status" -eq 0 ]
-  [ "$(line_of '^upload_maint ')" -lt "$(line_of '^versions_view ')" ]
-  [ "$(line_of '^versions_view ')" -lt "$(line_of '^triggers ')" ]
-  [ "$(line_of '^versions_view ')" -lt "$(line_of '^promote_maint ')" ]
-  # Nothing is read inside the window: the final upload is not read back.
-  [ "$(grep -c '^versions_view ' "$CALLS_LOG")" -eq 1 ]
-  assert_step_called promote_final
-}
-
-@test "expected_runtime_date_differs_windowed: a mismatch aborts with nothing live" {
-  run_wrapper 'DEPLOY_EXPECTED_RUNTIME={"compatibility_date": "2026-04-21", "compatibility_flags": []}'
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"RUNTIME MISMATCH: uploaded version"*"compatibility_date 2025-01-01"*"is compatibility_date 2026-04-21"* ]]
-  refute_step_called triggers
-  refute_step_called promote_maint
-  refute_step_called lock
-  refute_step_called wrangler_rollback
-}
-
-@test "expected_runtime_flags_differ_windowed: a flag the upload lacks is a mismatch" {
+@test "expected_runtime_flags_differ: a flag the upload lacks is a mismatch" {
   run_wrapper 'DEPLOY_EXPECTED_RUNTIME={"compatibility_date": "2025-01-01", "compatibility_flags": ["nodejs_compat"]}'
   [ "$status" -ne 0 ]
   [[ "$output" == *"RUNTIME MISMATCH"*"compatibility_flags [nodejs_compat]"* ]]
-  refute_step_called triggers
-  refute_step_called promote_maint
+  refute_step_called promote_final
 }
 
 @test "expected_runtime_read_fails: a failed read says so and is not reported as a mismatch" {
@@ -121,8 +90,7 @@ line_of() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"RUNTIME NOT CHECKED: reading uploaded version"*"This is a failed read, not a runtime mismatch"* ]]
   [[ "$output" != *"RUNTIME MISMATCH"* ]]
-  refute_step_called triggers
-  refute_step_called promote_maint
+  refute_step_called promote_final
 }
 
 @test "expected_runtime_read_blips: a transient read failure is retried and the deploy proceeds" {
@@ -145,17 +113,8 @@ line_of() {
 
 # A successful runtime read does not guarantee the deploy endpoint can see the
 # same version yet. Both bodies must finish without entering recovery.
-@test "maintenance promotion waits for the uploaded version after runtime verification" {
-  run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
-    DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_maint:1:version_not_found
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"promote_maint: succeeded on attempt 2/2"* ]]
-  assert_step_called unlock
-  refute_step_called wrangler_rollback
-}
-
 @test "windowless final promotion waits for the uploaded version after runtime verification" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
     DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found
   [ "$status" -eq 0 ]
   [[ "$output" == *"promote_final: succeeded on attempt 2/2"* ]]
@@ -163,7 +122,7 @@ line_of() {
 }
 
 @test "a silent failed promotion keeps its rollback obligation" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless WRANGLER_LOG=none \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 WRANGLER_LOG=none \
     DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -171,7 +130,7 @@ line_of() {
 }
 
 @test "windowless retry leaves an intervening deployment serving" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_superseded
   [ "$status" -ne 0 ]
   [[ "$output" == *"Serving set changed mid-deploy"* ]]
@@ -180,7 +139,7 @@ line_of() {
 }
 
 @test "windowless retry leaves an intervening split serving" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_superseded MOCK_SERVING_AFTER_PROMOTE=split
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -188,7 +147,7 @@ line_of() {
 }
 
 @test "a missing-version code in an annotation preserves recovery after traffic changes" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:post_promote_error
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -196,7 +155,7 @@ line_of() {
 }
 
 @test "a missing-version error from submission keeps rollback armed" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:submission_not_found
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -204,33 +163,24 @@ line_of() {
 }
 
 @test "an unreadable windowless recheck after a rejected promotion does not overwrite traffic" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 \
     DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_unreadable
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
   refute_step_called wrangler_rollback
 }
 
-@test "exhausted final lookups leave only maintenance live during windowed recovery" {
-  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:2:version_not_found \
-    MOCK_FAIL_AT=wrangler_rollback
-  [ "$status" -ne 0 ]
-  assert_step_called tt_restore
-  assert_step_called wrangler_rollback
-  assert_step_called unlock
-}
-
 @test "expected_runtime_unreadable_document: a document stating no runtime says so and is not a mismatch" {
   # MOCK_VERSION_MESSAGE answers with annotations only: no resources at all.
-  run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" "MOCK_VERSION_MESSAGE=deploy-pipeline maintenance (smoketest)"
+  run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" "MOCK_VERSION_MESSAGE=deploy-pipeline final (smoketest)"
   [ "$status" -ne 0 ]
   [[ "$output" == *"RUNTIME NOT CHECKED: uploaded version"*"no resources.script_runtime"*"This is not a runtime mismatch"* ]]
   [[ "$output" != *"RUNTIME MISMATCH"* ]]
-  refute_step_called triggers
+  refute_step_called promote_final
 }
 
 @test "expected_runtime_differs_windowless: the final upload is refused before the promote" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless \
+  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 \
     'DEPLOY_EXPECTED_RUNTIME={"compatibility_date": "2026-04-21", "compatibility_flags": []}'
   [ "$status" -ne 0 ]
   [[ "$output" == *"RUNTIME MISMATCH"* ]]
@@ -243,5 +193,4 @@ line_of() {
   run_wrapper DEPLOY_EXPECTED_RUNTIME=
   [ "$status" -ne 0 ]
   [[ "$output" == *"DEPLOY_EXPECTED_RUNTIME is not JSON"* ]]
-  refute_step_called upload_maint
 }

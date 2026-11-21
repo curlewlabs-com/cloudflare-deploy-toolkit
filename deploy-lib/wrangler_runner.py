@@ -48,8 +48,7 @@ def reaches_wrangler(value: str) -> bool:
     """Whether this string can still be handed to wrangler as an argument.
 
     During recovery, the pipeline spends the serving version id as
-    `wrangler rollback <id>` and the Time Travel
-    bookmark becomes `--bookmark=<b>`. A value that cannot survive that trip has
+    `wrangler rollback <id>`. A value that cannot survive that trip has
     to be refused where it is recorded, while the deploy can still stop cleanly.
 
     `os.fsencode` is the exact question, and it is narrower than it looks. The
@@ -114,10 +113,6 @@ def invoke(argv: Sequence[str]) -> WranglerResult:
     pipeline parses. It is set on the child rather than exported, so a consumer
     hook keeps the caller's own CI value.
 
-    Public because one call deliberately runs outside the retry loop: the lock
-    read in deploy_lock.py, whose own caller retries on any unreadable state,
-    which is broader than the transient roster. Layering the narrower classifier
-    beneath the broader retry would only reduce reliability.
     """
     try:
         completed = subprocess.run(

@@ -11,9 +11,6 @@ stateful Cloudflare Worker using cloudflare-deploy-toolkit.
   `deploy-safe.sh`, failure-only artifact upload, post-deploy verification via
   the Cloudflare API, deployment-record finish (a status POST with
   `if: always()`)
-- **`unlock-db.yml`**: Manual `workflow_dispatch` for operators to flip
-  `_deploy_lock.locked` back to 0 after a catastrophic deploy failure where the
-  recovery path couldn't reach unlock
 
 ## How to adapt `deploy.yml` for a new Worker
 
@@ -97,8 +94,8 @@ Specifically:
 
 8. **Deploy script** - `<PROJECT>/scripts/deploy-safe.sh` is your safe-deploy
    wrapper, ~30 lines of boilerplate plus a few lines per hook. It exports
-   `DEPLOY_DB_*` and `DEPLOY_WRANGLER_ENV_*` for staging and production plus
-   `PREFLIGHT_CMD` / `MIGRATE_CMD` / `POSTFLIGHT_CMD`, and runs
+   `DEPLOY_PIPELINE_MODE=windowless-v1` and `DEPLOY_WRANGLER_ENV_*` plus
+   `WINDOWLESS_PREFLIGHT_CMD` / `MIGRATE_CMD` / `POSTFLIGHT_CMD`, and runs
    `safe_deploy_pipeline.py "$@"`. See
    [`../deploy-lib/README.md`](../deploy-lib/README.md) for the full API and an
    inlined wrapper example.

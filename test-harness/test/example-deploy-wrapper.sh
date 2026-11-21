@@ -8,7 +8,7 @@
 # no-ops.
 #
 # Real consumer wrappers look almost identical to this, just with:
-#   - real DEPLOY_DB_* / DEPLOY_WRANGLER_ENV_* values
+#   - real DEPLOY_WRANGLER_ENV_* values
 #   - hook commands that actually run schema checks and migrations against your
 #     D1 database
 #   - a path that points at your vendored copy of the toolkit
@@ -19,8 +19,7 @@
 #
 #   - config is EXPORTED, because a subprocess reads its environment and cannot
 #     see a shell variable the wrapper merely assigned;
-#   - hooks are COMMANDS, run with the environment name appended as the last
-#     argument.
+#   - hooks are COMMANDS, run with the environment appended and, for preflight, the captured version ID.
 #
 # See deploy-lib/README.md for the full API.
 
@@ -31,15 +30,14 @@ HARNESS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLKIT_DIR="$(cd "$HARNESS_DIR/.." && pwd)"
 
 # === required config (read by the pipeline from its environment) ===
-export DEPLOY_DB_STAGING="example-db-staging"
-export DEPLOY_DB_PRODUCTION="example-db-production"
 export DEPLOY_WRANGLER_ENV_STAGING="staging"
 export DEPLOY_WRANGLER_ENV_PRODUCTION="production"
 
-# === hook commands (pipeline appends $env as the last argument) ===
+# Hook commands receive the environment; preflight also receives the version ID.
 # Defaulted rather than assigned so a test driver can substitute a builtin -
 # `true` for a no-op, `false` to inject a failure - without editing the wrapper.
-export PREFLIGHT_CMD="${PREFLIGHT_CMD:-$SCRIPT_DIR/example-hook.sh preflight}"
+export DEPLOY_PIPELINE_MODE="${DEPLOY_PIPELINE_MODE-windowless-v1}"
+export WINDOWLESS_PREFLIGHT_CMD="${WINDOWLESS_PREFLIGHT_CMD:-$SCRIPT_DIR/example-hook.sh preflight}"
 export MIGRATE_CMD="${MIGRATE_CMD:-$SCRIPT_DIR/example-hook.sh migrate}"
 export POSTFLIGHT_CMD="${POSTFLIGHT_CMD:-$SCRIPT_DIR/example-hook.sh postflight}"
 

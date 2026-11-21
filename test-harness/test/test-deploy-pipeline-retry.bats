@@ -43,8 +43,7 @@
 #                               worst possible moment still recovers.
 #   - captured_stdout_stays_clean_and_counter_matches:
 #                               the callers that parse the runner's
-#                               captured stdout (`deployments list` and
-#                               `d1 time-travel info`) must not see
+#                               captured `deployments list` stdout must not see
 #                               retry-diagnostic pollution on a
 #                               retry-then-success run, and the diagnostics
 #                               bundle's `total_wrangler_retries` field must
@@ -104,39 +103,17 @@ assert_step_called_n_times() {
 }
 
 # ----------------------------------------------------------------------
-# Transient fetch-failed on promote_maint: injected failures, then success.
+# Transient fetch-failed on promote_final: injected failures, then success.
 # The retry helper must transparently recover and the rest of the
 # pipeline must run as normal.
 # ----------------------------------------------------------------------
-@test "fetch_failed_recovers: transient network error on promote_maint is retried" {
-  run_wrapper MOCK_TRANSIENT_FAIL_AT=promote_maint:2:fetch_failed
+@test "transient network errors on promotion are retried" {
+  run_wrapper MOCK_TRANSIENT_FAIL_AT=promote_final:2:fetch_failed
   [ "$status" -eq 0 ]
-  # One invocation of promote_maint per injected failure, plus the one that
-  # succeeds.
-  assert_step_called_n_times 3 promote_maint
-  # Rest of the happy path still runs after recovery.
-  assert_step_called_n_times 1 lock
-  assert_step_called_n_times 1 bookmark
-  assert_step_called_n_times 1 promote_final
-  assert_step_called_n_times 1 unlock
+  assert_step_called_n_times 3 promote_final
+  assert_step_called_n_times 0 wrangler_rollback
 }
 
-# ----------------------------------------------------------------------
-# Transient D1 DO-reset (7429) on the lock mutation: injected failures,
-# then success. This is the shape that bit the 2026-04-23 rerun - wrangler
-# returned non-zero but the UPDATE had already applied server-side.
-# Retry converges (the UPDATE is idempotent) and the lock read-back
-# verify remains authoritative.
-# ----------------------------------------------------------------------
-@test "code_7429_recovers: transient D1 reset on lock mutation is retried" {
-  run_wrapper MOCK_TRANSIENT_FAIL_AT=lock:2:code_7429
-  [ "$status" -eq 0 ]
-  assert_step_called_n_times 3 lock
-  assert_step_called_n_times 1 bookmark
-  assert_step_called_n_times 1 unlock
-}
-
-# ----------------------------------------------------------------------
 # A Cloudflare 5xx whose body came from the edge rather than the API:
 # wrangler cannot parse it into an envelope, so it renders the raw
 # exchange with no `HTTP <status>` token anywhere. A roster carrying only
@@ -154,7 +131,6 @@ assert_step_called_n_times() {
   # The promote succeeded on the third attempt, so the recovery path must
   # not have rolled the worker back.
   assert_step_called_n_times 0 wrangler_rollback
-  assert_step_called_n_times 1 unlock
 }
 
 # ----------------------------------------------------------------------
@@ -204,26 +180,14 @@ assert_step_called_n_times() {
 
 # ----------------------------------------------------------------------
 # Auth errors are outside the retryable allowlist - they must fail on the
-# first attempt with no retries. The failure is injected AT promote_maint, so
-# the recovery below is a worker rollback: the promote was in flight, and a
-# promote that reported failure may still have applied server-side. No bookmark
-# exists, so no D1 restore. This guards the allowlist from being accidentally
-# broadened to match credentials / config errors.
-# ----------------------------------------------------------------------
+# first attempt with no retries. The failure is injected AT promote_final, so
+# recovery rolls back because a failed submission may have applied.
 @test "auth_error_fails_fast: non-retryable classification does not retry" {
-  run_wrapper MOCK_TRANSIENT_FAIL_AT=promote_maint:99:auth_error
+  run_wrapper MOCK_TRANSIENT_FAIL_AT=promote_final:99:auth_error
   [ "$status" -ne 0 ]
   # Exactly one attempt - no retry on a classified non-retryable error.
-  assert_step_called_n_times 1 promote_maint
-  # Happy-path steps after promote_maint must not run.
-  assert_step_called_n_times 0 lock
-  assert_step_called_n_times 0 bookmark
-  # The promote was in flight when it failed, so the recovery path rolls the
-  # worker back rather than assuming the call left nothing behind
-  # (fail_promote_maint in the smoke suite owns that invariant). No bookmark
-  # exists, so there is no D1 restore.
+  assert_step_called_n_times 1 promote_final
   assert_step_called_n_times 1 wrangler_rollback
-  assert_step_called_n_times 0 tt_restore
 }
 
 # ----------------------------------------------------------------------
@@ -237,58 +201,50 @@ assert_step_called_n_times() {
 @test "exhausted_aborts_clean: bounded attempts then propagate failure" {
   # More failures requested than there are attempts, so every attempt
   # fails with fetch_failed and the retry helper returns the last exit code.
-  run_wrapper MOCK_TRANSIENT_FAIL_AT=promote_maint:99:fetch_failed
+  run_wrapper MOCK_TRANSIENT_FAIL_AT=promote_final:99:fetch_failed
   [ "$status" -ne 0 ]
   # The initial attempt plus one retry per schedule entry.
-  assert_step_called_n_times 4 promote_maint
+  assert_step_called_n_times 4 promote_final
   assert_step_called_n_times 1 wrangler_rollback
-  assert_step_called_n_times 0 tt_restore
 }
 
 # ----------------------------------------------------------------------
 # The recovery path's wrangler rollback call also runs through the retry
 # helper: a transient failure at rollback time (the worst possible
 # moment for a one-shot miss) still recovers. Drive this by failing at
-# lock so the recovery path is forced to run wrangler_rollback, and inject
-# transient failures on the rollback step itself.
-# ----------------------------------------------------------------------
+# promote so recovery must spend its pinned rollback target.
 @test "cleanup_rollback_retries: transient error on recovery rollback is retried" {
   run_wrapper \
-    MOCK_FAIL_AT=lock \
+    MOCK_FAIL_AT=promote_final \
     MOCK_TRANSIENT_FAIL_AT=wrangler_rollback:2:fetch_failed
   [ "$status" -ne 0 ]
-  # Lock failed once (the MOCK_FAIL_AT path), forcing the recovery path to run.
-  assert_step_called_n_times 1 lock
+  # The failed promotion starts recovery.
+  assert_step_called_n_times 1 promote_final
   # One rollback call per injected transient failure, plus the one that
   # succeeds.
   assert_step_called_n_times 3 wrangler_rollback
 }
 
+# A lost rollback response can follow a successful traffic change.
+@test "uncertain rollback identifies the pinned target and asks for a live read" {
+  run_wrapper "MOCK_FAIL_AT=promote_final wrangler_rollback"
+  [ "$status" -ne 0 ]
+  target=$(jq -r '.[-1].versions[0].version_id' "$FIXTURE_DIR/deployments_list.json")
+  grep -Fq "rollback $target --env staging" "$CALLS_LOG"
+  [[ "$output" == *"Read the serving version and traffic split before changing traffic"* ]]
+  [[ "$output" == *"target version $target already serves all traffic"* ]]
+}
+
 # ----------------------------------------------------------------------
-# Invariants (a) and (b) share one scenario because each is observed on the
-# same retry-then-success run through the runner:
-#   (a) The callers that parse a document out of the runner's stdout
-#       (the `deployments_list` and `bookmark_fetch` reads) must see it
-#       free of retry-diagnostic text on a retry-then-success path. A
-#       regression that let the runner's retry logs reach the returned
-#       stdout would break the subsequent parse. Exercising the retry on
-#       `deployments_list` drives that path; `bookmark_fetch` uses the
-#       same helper and the same caller pattern.
-#   (b) `total_wrangler_retries` in the DEPLOY_DIAGNOSTICS_DIR bundle
-#       must equal the actual number of retries performed. The counter
-#       has no other coverage; an off-by-one increment in the helper
-#       would be invisible without this.
-# (a) and (b) are proven by running the pipeline to success under
-# an injected retry count that jq must survive and the counter must
-# reflect exactly.
-# ----------------------------------------------------------------------
+# Deployment-list retry diagnostics must not contaminate parsed stdout.
+# The failure bundle reports retries across the capture and later rechecks.
 @test "captured_stdout_stays_clean_and_counter_matches: deployments_list retry succeeds and diagnostics record count" {
   export DEPLOY_DIAGNOSTICS_DIR="$BATS_TEST_TMPDIR/diagnostics"
   run_wrapper MOCK_TRANSIENT_FAIL_AT=deployments_list:2:fetch_failed
   # Pipeline must complete - implies the deployments_list parse succeeded despite
   # the prior retry cycles on the same call.
   [ "$status" -eq 0 ]
-  assert_step_called_n_times 3 deployments_list
+  assert_step_called_n_times 6 deployments_list
 
   diagnostics_file="$DEPLOY_DIAGNOSTICS_DIR/deploy-diagnostics.txt"
   [ -f "$diagnostics_file" ]
@@ -304,21 +260,16 @@ assert_step_called_n_times() {
 # terminal attempt's output - not the full transcript - or correctness
 # depends on silent couplings (retry diagnostic lines not matching
 # `Worker Version ID:`; prior attempts not emitting that pattern). This
-# test drives transient failures on upload_maint so the runner returns
+# test drives transient failures on upload_final so the runner returns
 # a terminal-attempt result distinct from the transcript, and the version
 # ID taken from it is the one used downstream.
 #
 # What the assertion rests on: mock-wrangler classifies a `versions deploy`
-# call as `promote_maint` only when the version-id argument contains the
-# maintenance slot UUID (11111111, per lib/test-slots.sh - see
-# `*"versions deploy"*"11111111"*` in mock-wrangler.sh). A wrong grep
-# would hand an unrelated string to `versions deploy`, classify as
-# `other`, and the promote_maint count would be 0. Getting 1 proves the
-# grep picked the right UUID out of the terminal attempt.
-# ----------------------------------------------------------------------
-@test "upload_maint_retry_keeps_right_version_id: terminal attempt's ID is what gets promoted" {
-  run_wrapper MOCK_TRANSIENT_FAIL_AT=upload_maint:2:fetch_failed
+# call as `promote_final` only when the version-id argument contains the
+# final slot UUID. Only the terminal upload's ID may be promoted.
+@test "upload_final_retry_keeps_right_version_id: terminal attempt's ID is what gets promoted" {
+  run_wrapper MOCK_TRANSIENT_FAIL_AT=upload_final:2:upload_id_then_fetch_failed
   [ "$status" -eq 0 ]
-  assert_step_called_n_times 3 upload_maint
-  assert_step_called_n_times 1 promote_maint
+  assert_step_called_n_times 3 upload_final
+  assert_step_called_n_times 1 promote_final
 }

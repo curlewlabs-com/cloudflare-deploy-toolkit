@@ -22,7 +22,6 @@
 #
 # Usage: sanitize-wrangler-text.sh <mode> [--scrub-binding NAME ...]
 # Modes:
-#   upload-maint  - versions upload --var MAINTENANCE_MODE:true output
 #   upload-final  - versions upload (no maintenance var) output
 #   triggers      - triggers deploy output (no Worker Version ID injection)
 #
@@ -42,7 +41,7 @@ MODE=""
 SCRUB_BINDINGS=""
 while [ $# -gt 0 ]; do
     case "$1" in
-    upload-maint | upload-final | triggers)
+    upload-final | triggers)
         MODE="$1"
         ;;
     --scrub-binding)
@@ -60,7 +59,6 @@ Usage: $0 <mode> [--scrub-binding NAME ...]
 Reads wrangler text output from stdin, writes sanitized fixture to stdout.
 
 Modes:
-  upload-maint  versions upload --var MAINTENANCE_MODE:true output
   upload-final  versions upload (no maintenance var) output
   triggers      triggers deploy output (no Worker Version ID injection)
 
@@ -69,9 +67,7 @@ Options:
                           Repeatable. Use for binding names whose values
                           are consumer-specific PII.
 
-The fixed UUIDs injected for upload-maint (11111111-...) and upload-final
-(22222222-...) are defined in lib/test-slots.sh and shared with the mock
-and consumer test drivers.
+The upload UUID is defined in lib/test-slots.sh and shared with the mock.
 EOF
         exit 2
         ;;
@@ -84,7 +80,6 @@ EOF
 done
 
 case "$MODE" in
-upload-maint) INJECT_VERSION_ID="$WRANGLER_HARNESS_MAINT_UUID" ;;
 upload-final) INJECT_VERSION_ID="$WRANGLER_HARNESS_FINAL_UUID" ;;
 triggers) INJECT_VERSION_ID="" ;;
 *)

@@ -1,17 +1,8 @@
 """What one deploy run was asked to do, resolved once before anything runs.
 
-Everything the pipeline needs to know that is not a decision about live state:
-the environment and its D1 database, the commit being deployed, which body
-runs, the hook commands, the retry schedules, and where diagnostics go. All of
-it comes from argv and the environment, and all of it is settled here so that a
-misconfigured run fails before the first wrangler call rather than part-way
-through a maintenance window.
-
-THE HOOK CONTRACT IS COMMANDS. The pipeline is a program a consumer's wrapper
-starts rather than a library it sources, so the hooks are commands the
-pipeline runs as subprocesses with the environment name appended as their last
-argument, named by `PREFLIGHT_CMD`, `MIGRATE_CMD` and `POSTFLIGHT_CMD`, plus
-`RELOCATE_COPY_CMD` on the relocation body.
+The wrapper supplies the Wrangler environment, commit, runtime expectations
+and hook commands. Config errors must stop the run before any live mutation.
+Hooks receive the target environment. Preflight also receives the serving version ID.
 
 A command string is split with `shlex`, not on whitespace, so a hook path
 containing a space is expressible when it is quoted.
@@ -27,10 +18,8 @@ from collections.abc import Mapping, Sequence
 
 import version_runtime
 
-WINDOWED = "windowed"
-WINDOWLESS = "windowless"
-RELOCATION = "relocation"
-MODES = (WINDOWED, WINDOWLESS, RELOCATION)
+# A previous pin must reject an upgraded wrapper before running its old hooks.
+WINDOWLESS = "windowless-v1"
 
 ENVIRONMENTS = ("staging", "production")
 
@@ -39,16 +28,6 @@ FULL_SHA = re.compile(r"[0-9a-f]{40}")
 # What a consumer that sets none of them gets. Each is overridable by the
 # matching environment variable; `deploy-lib/README.md` documents them.
 DEFAULT_WRANGLER = "npx wrangler"
-DEFAULT_DRAIN_SECONDS = 15
-# How long a relocation may hold its source fenced before it must have reached
-# the promote. It bounds the time to the promote, not the pause, so a consumer's
-# ceiling on the whole pause has to leave room for whichever way out is longer:
-# the promote, the serving check and opening the target; or, when a hook is
-# stopped at the deadline, the stop sequence's grace period and then reopening
-# the source.
-DEFAULT_RELOCATION_MAX_PAUSE_SECONDS = 240
-DEFAULT_VERIFY_BACKOFF = "1 2 4 8"
-
 USAGE = """Usage: %s <staging|production> [--sha SHA] [--expected-serving-sha SHA]
 
   --sha                   7-char commit hash for deploy metadata (default: git rev-parse)
@@ -65,13 +44,7 @@ class ConfigError(Exception):
 
 
 def _whole_seconds(raw: str, field: str) -> int:
-    """A duration the pipeline can actually wait, or a refusal.
-
-    Negative and non-numeric values are refused because `sleep`
-    cannot honor. Refusing here rather than at the wait matters because the
-    windowed body does not reach its first wait until the maintenance version is
-    already serving.
-    """
+    """Reject retry intervals that sleep cannot honor."""
     try:
         seconds = int(raw)
     except ValueError as exc:
@@ -188,11 +161,8 @@ class DeployConfig:
 
     env: str
     sha: str
-    mode: str
-    db_name: str
     wrangler_env: str
     wrangler: tuple[str, ...]
-    drain_seconds: int
     version_message_annotation: str
     # The full commit being deployed, or empty. Set, every upload's message
     # names it (version_message.py), which is what a later expected-build bind
@@ -209,95 +179,34 @@ class DeployConfig:
     expected_runtime: version_runtime.Runtime | None
     diagnostics_dir: str | None
     retry_backoff: tuple[int, ...] | None
-    verify_backoff: tuple[int, ...]
-    preflight_cmd: tuple[str, ...] | None
+    preflight_cmd: tuple[str, ...]
     migrate_cmd: tuple[str, ...]
     postflight_cmd: tuple[str, ...] | None
-    # The relocation body's own config, and empty on every other body. There
-    # `db_name` is the TARGET - the database this checkout deploys against, as
-    # on every body - and this names the SOURCE the Worker is being moved off.
-    relocation_source_db: str
-    relocate_copy_cmd: tuple[str, ...] | None
-    # The operator's statement that the source is ALREADY fenced by an earlier
-    # relocation run and this one continues it. A set lock cannot say who set
-    # it, and a deploy that died inside its maintenance window leaves the same
-    # bit; deploy_relocation.start_from has what each combination means.
-    relocation_resume: bool
-    # Whole seconds from the fence to the promote. 0 outside a relocation.
-    relocation_max_pause_seconds: int
     github_actions: bool
     github_step_summary: str | None
 
-    @property
-    def is_production(self) -> bool:
-        return self.env == "production"
-
-
-def _relocation(
-    environ: Mapping[str, str], *, suffix: str, db_name: str
-) -> tuple[str, tuple[str, ...]]:
-    """The relocation body's source database and copy hook, or a refusal.
-
-    Each is required here for the reason the migrate hook is: the copy hook is
-    reached only once the source is fenced, and discovering it missing there
-    costs a write pause that bought nothing.
-    """
-    source = environ.get(f"DEPLOY_RELOCATION_SOURCE_DB_{suffix}", "")
-    if not source:
-        raise ConfigError(
-            f"deploy-lib: DEPLOY_RELOCATION_SOURCE_DB_{suffix} is not set. A "
-            "relocation moves the Worker off a source database onto "
-            f"DEPLOY_DB_{suffix}; name the source."
-        )
-    if source == db_name:
-        # One database named as the source and as the target would be fenced and
-        # then opened, by a run that copied nothing.
-        raise ConfigError(
-            f"deploy-lib: DEPLOY_RELOCATION_SOURCE_DB_{suffix} and "
-            f"DEPLOY_DB_{suffix} each name '{db_name}'; a relocation needs a "
-            "source that is not its target"
-        )
-    copy_cmd = _hook(environ.get("RELOCATE_COPY_CMD"))
-    if copy_cmd is None:
-        raise ConfigError(
-            "deploy-lib: RELOCATE_COPY_CMD is not set. The relocation body runs "
-            "it once the source is fenced, with the environment name as its last "
-            "argument; it must leave the target an exact, still-locked copy of "
-            "the source, or fail."
-        )
-    return source, copy_cmd
-
 
 def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
-    """Read the environment into a DeployConfig, refusing what cannot deploy.
-
-    Every refusal here happens before the first wrangler call, which is the
-    point: an unrecognized mode, a missing database name, or an absent migrate
-    hook must not be discovered after a maintenance version is already serving.
-    """
-    mode = environ.get("DEPLOY_PIPELINE_MODE") or WINDOWED
-    if mode not in MODES:
+    """Refuse incompatible configurations before any live mutation."""
+    mode = environ.get("DEPLOY_PIPELINE_MODE", "")
+    if mode != WINDOWLESS:
         raise ConfigError(
-            f"deploy-lib: unrecognized DEPLOY_PIPELINE_MODE '{mode}' "
-            f"(expected '{WINDOWED}', '{WINDOWLESS}' or '{RELOCATION}')"
+            f"deploy-lib: unrecognized DEPLOY_PIPELINE_MODE '{mode}' (expected '{WINDOWLESS}')"
         )
 
-    suffix = invocation.env.upper()
-    db_name = environ.get(f"DEPLOY_DB_{suffix}", "")
-    wrangler_env = environ.get(f"DEPLOY_WRANGLER_ENV_{suffix}", "")
-    if not db_name or not wrangler_env:
+    key = f"DEPLOY_WRANGLER_ENV_{invocation.env.upper()}"
+    wrangler_env = environ.get(key)
+    if not wrangler_env:
+        raise ConfigError(f"deploy-lib: set {key} for env={invocation.env}")
+
+    # Older wrappers delegated the database fence check to the toolkit. A
+    # distinct hook name makes upgrading a deliberate transfer of that check.
+    preflight_cmd = _hook(environ.get("WINDOWLESS_PREFLIGHT_CMD"))
+    if preflight_cmd is None:
         raise ConfigError(
-            f"deploy-lib: missing config for env={invocation.env}\n"
-            "  set DEPLOY_DB_STAGING / DEPLOY_DB_PRODUCTION and\n"
-            "  DEPLOY_WRANGLER_ENV_STAGING / DEPLOY_WRANGLER_ENV_PRODUCTION "
-            "in the pipeline's environment"
+            "deploy-lib: set WINDOWLESS_PREFLIGHT_CMD to verify live migration safety before deployment"
         )
 
-    # The migrate hook is required, and it is required HERE rather than at the
-    # step that runs it. On the windowed body that step is reached only after the
-    # maintenance version is serving and the database is locked, so discovering
-    # the hook missing there costs a consumer the full recovery path. The
-    # value is known before anything runs, so the refusal belongs there.
     migrate_cmd = _hook(environ.get("MIGRATE_CMD"))
     if migrate_cmd is None:
         raise ConfigError(
@@ -306,30 +215,6 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
             "set MIGRATE_CMD to that command (use `true` for a deploy that "
             "applies no migration)."
         )
-
-    relocation_source_db = ""
-    relocate_copy_cmd = None
-    relocation_max_pause_seconds = 0
-    if mode == RELOCATION:
-        relocation_source_db, relocate_copy_cmd = _relocation(
-            environ, suffix=suffix, db_name=db_name
-        )
-        relocation_max_pause_seconds = _whole_seconds(
-            environ.get("DEPLOY_RELOCATION_MAX_PAUSE_SECONDS")
-            or str(DEFAULT_RELOCATION_MAX_PAUSE_SECONDS),
-            "DEPLOY_RELOCATION_MAX_PAUSE_SECONDS",
-        )
-        if relocation_max_pause_seconds == 0:
-            # Zero would refuse every fenced step the instant the fence closed:
-            # a relocation that pauses writes and can never do anything else.
-            raise ConfigError(
-                "DEPLOY_RELOCATION_MAX_PAUSE_SECONDS must be at least 1, got 0"
-            )
-
-    drain_seconds = _whole_seconds(
-        environ.get("DEPLOY_DRAIN_SECONDS") or str(DEFAULT_DRAIN_SECONDS),
-        "DEPLOY_DRAIN_SECONDS",
-    )
 
     commit_sha = environ.get("DEPLOY_COMMIT_SHA", "")
     if commit_sha and not (
@@ -363,11 +248,8 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
     return DeployConfig(
         env=invocation.env,
         sha=invocation.sha,
-        mode=mode,
-        db_name=db_name,
         wrangler_env=wrangler_env,
         wrangler=tuple(shlex.split(environ.get("WRANGLER") or DEFAULT_WRANGLER)),
-        drain_seconds=drain_seconds,
         version_message_annotation=environ.get("DEPLOY_VERSION_MESSAGE_ANNOTATION", ""),
         commit_sha=commit_sha,
         expected_serving_sha=expected_serving_sha,
@@ -378,19 +260,9 @@ def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
             if (schedule := environ.get("DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS"))
             else None
         ),
-        verify_backoff=_backoff(
-            environ.get("DEPLOY_VERIFY_BACKOFF_SECONDS") or DEFAULT_VERIFY_BACKOFF,
-            "DEPLOY_VERIFY_BACKOFF_SECONDS",
-        ),
-        preflight_cmd=_hook(environ.get("PREFLIGHT_CMD")),
+        preflight_cmd=preflight_cmd,
         migrate_cmd=migrate_cmd,
         postflight_cmd=_hook(environ.get("POSTFLIGHT_CMD")),
-        relocation_source_db=relocation_source_db,
-        relocate_copy_cmd=relocate_copy_cmd,
-        relocation_resume=(
-            mode == RELOCATION and environ.get("DEPLOY_RELOCATION_RESUME") == "true"
-        ),
-        relocation_max_pause_seconds=relocation_max_pause_seconds,
         github_actions=bool(environ.get("GITHUB_ACTIONS")),
         github_step_summary=environ.get("GITHUB_STEP_SUMMARY") or None,
     )

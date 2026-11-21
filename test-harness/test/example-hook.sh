@@ -1,27 +1,12 @@
 #!/bin/sh
 # Minimal example consumer hook for the Python deploy pipeline.
 #
-# The pipeline runs each hook as a COMMAND with the environment name appended
-# as the last argument, so a hook command may carry its own leading arguments -
-# which is what lets one script stand in for preflight, migration, and post-flight hooks here. A real consumer's
-# hooks run schema lints, migrations, and post-flight checks; these no-op echoes
-# are enough for the smoke test, which substitutes MIGRATE_CMD and
-# POSTFLIGHT_CMD anyway.
+# The wrapper configures the label as a leading argument. The pipeline supplies
+# the target environment and, for preflight, the immutable serving version ID.
+# Consumer preflights use that ID to check compatibility before remote changes.
 #
-# Usage: example-hook.sh <label> <env>
+# Usage: example-hook.sh <label> <env> [serving-version-id]
 set -eu
-
-# A hook's effect on a deploy lock, for the relocation tests. The body depends
-# on its copy hook leaving the target filled and LOCKED, and has to notice a
-# hook that left a lock any other way. EXAMPLE_HOOK_SETS is a whitespace-separated
-# list of <label>=<lock-state file>=<state>; an entry applies when this hook runs
-# under that label.
-# shellcheck disable=SC2086 # split on purpose: the value is a list
-for _entry in ${EXAMPLE_HOOK_SETS:-}; do
-    [ "${_entry%%=*}" = "$1" ] || continue
-    _rest="${_entry#*=}"
-    printf '%s\n' "${_rest#*=}" >"${_rest%%=*}"
-done
 
 # A hook that never finishes, and that starts a child the way a real hook
 # starts the program doing its work. It records its own process id and the

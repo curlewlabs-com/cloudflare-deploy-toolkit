@@ -1,15 +1,7 @@
 """What the Worker is serving: reading it, uploading to it, and moving it.
 
-Every step here writes one of the version fields on the run's state - the
-rollback target, the recorded serving version, the maintenance and final uploaded
-version ids, and the flags that say whether a promoted version may be live. Nothing else in
-the pipeline writes them, and the recovery path's Worker rollback is the last
-member of the same set, which is why it lives here rather than beside the
-recovery layers that call it.
-
-The serving set has to be exactly one version at 100%, and the windowed and
-windowless captures refuse
-anything else. A gradual split is not a legal starting state: this pipeline
+The pipeline captures one serving version as the rollback target. The captured
+ID must still serve all traffic before migration and promotion. A gradual split is not a legal starting state: this pipeline
 records ONE rollback target and, on failure, sends all traffic back to it, so
 under a split that target would be whichever slice Cloudflare happened to list
 first - a version the run never reasoned about. Which shapes refuse and why is
@@ -103,66 +95,12 @@ class WorkerVersions:
 
     # --- capture -----------------------------------------------------------
 
-    def capture_previous_version_id(self) -> None:
-        """Record the rollback target the recovery path will use.
-
-        A list that cannot be read refuses the deploy in either environment: a
-        transient wrangler auth or network failure read as a first-ever deploy
-        would disable the Worker rollback for the rest of the run. A Worker's
-        first deploy, which has no list to read, goes out once as a plain
-        `wrangler deploy` (the README's Limits).
-        """
-        config, state = self._config, self._state
-        self._reporter.step(f"Capture previous version ID ({config.env})")
-        result = self._deployments_list()
-        if not result.ok:
-            emit_error(
-                "[FAIL] Could not list deployments (see stderr above for "
-                "wrangler output)"
-            )
-            emit_error(
-                "[FAIL] Refusing to treat an unreadable deployments list as a "
-                "first deploy. A Worker's first deploy goes out once as a plain "
-                "`wrangler deploy`."
-            )
-            raise DeployAbort(1)
-
-        # The bootstrap shape is checked first and separately: a readable list
-        # with no deployment - or no version under the newest one - is the one
-        # emptiness this body legitimately continues through, and staging goes
-        # on with no rollback target. "Nothing has deployed yet" must never be
-        # reachable by an extraction failure, or staging proceeds with no
-        # rollback target on evidence nobody checked.
-        if deployments_list.is_bootstrap_shape(result.stdout):
-            if config.expected_serving_sha:
-                emit_error(
-                    "[FAIL] Nothing is serving, so the expected build "
-                    f"{config.expected_serving_sha} is not. Refusing to deploy."
-                )
-                raise DeployAbort(1)
-            state.prev_version_id = ""
-        else:
-            state.prev_version_id = self._single_serving_version(result.stdout)
-
-        if not state.prev_version_id and config.is_production:
-            emit_error(
-                "[FAIL] Could not extract previous version ID from deployments "
-                "list - refusing to deploy production without a rollback target"
-            )
-            raise DeployAbort(1)
-        emit(f"Previous version: {state.prev_version_id or '<none - first deploy>'}")
-        self._reporter.summary(
-            f"| Previous version | `{state.prev_version_id or 'none'}` |"
-        )
-
-    def capture_single_serving_version(self) -> None:
+    def capture_single_serving_version(self) -> str:
         """The windowless capture: the serving set must be exactly one version.
 
         Recorded as the rollback target for a failed final promote and the
-        reference the TOCTOU re-checks match. Unlike the windowed capture
-        there is no bootstrap tolerance: with no serving version there is
-        nothing for the single-version invariant to describe, so a first-ever
-        deploy has to run the windowed body. Nothing falls back silently.
+        reference checked before migration and promotion. Provision a new
+        Worker separately so an unreadable deployment cannot be mistaken for one.
         """
         config, state = self._config, self._state
         self._reporter.step(f"Single-version preflight ({config.env})")
@@ -178,15 +116,16 @@ class WorkerVersions:
         state.prev_version_id = state.serving_version_id
         emit(f"Serving version (single, 100%): {state.serving_version_id}")
         self._reporter.summary(f"| Serving version | `{state.serving_version_id}` |")
+        return state.serving_version_id
 
     def verify_single_serving_version(self, context: str) -> None:
         """TOCTOU re-check: the serving set must still be the recorded version.
 
-        Before a windowless DB mutation, a mismatch stops the migration. At
-        promotion or a visibility retry, the DB is already migrated. Aborting
-        leaves any intervening deployment or split in place. A deployment landing in the seconds between a re-check and the
-        action it guards is the documented operational exclusion: another
-        control plane moved it, and the next sanctioned deploy's preflight
+        A mismatch before migration leaves the database untouched. At final
+        promotion or a visibility retry the database has already migrated;
+        aborting preserves the serving version or split that intervened.
+        A deployment between the check and the action is the operational
+        exclusion: another control plane moved traffic. The next preflight
         detects the result.
         """
         config, state = self._config, self._state
@@ -223,15 +162,6 @@ class WorkerVersions:
 
     # --- upload and promote ------------------------------------------------
 
-    def upload_maintenance_version(self) -> None:
-        config, state = self._config, self._state
-        self._reporter.step(f"Upload maintenance-mode version ({config.env})")
-        state.new_maint_id = self._upload_version(
-            version_message.MAINTENANCE, ["--var", "MAINTENANCE_MODE:true"]
-        )
-        emit(f"New maintenance version: {state.new_maint_id}")
-        self._reporter.summary(f"| Maintenance version | `{state.new_maint_id}` |")
-
     def upload_final_version(self) -> None:
         config, state = self._config, self._state
         self._reporter.step(f"Upload final version ({config.env})")
@@ -239,24 +169,8 @@ class WorkerVersions:
         emit(f"New final version: {state.new_final_id}")
         self._reporter.summary(f"| Final version | `{state.new_final_id}` |")
 
-    def verify_maintenance_runtime(self) -> None:
-        """The windowed body's runtime check, on its first upload.
-
-        The maintenance version is read back, before the triggers update and its
-        promote, so a failed or slow read holds nothing paused. The final
-        version is not read back: it is uploaded inside the window, where a
-        read failure would cost the full recovery, and it comes from the same
-        checkout, wrangler environment and process as the maintenance version,
-        differing from it only by a `--var`, which sets no runtime.
-        """
-        self._verify_uploaded_runtime(self._state.new_maint_id)
-
     def verify_final_runtime(self) -> None:
-        """The windowless and relocation bodies' runtime check, on their upload.
-
-        Each uploads only its final version. The relocation body uploads before
-        it fences the source, so this read is outside the write pause too.
-        """
+        """Check the immutable upload before it can receive traffic."""
         self._verify_uploaded_runtime(self._state.new_final_id)
 
     def _verify_uploaded_runtime(self, version_id: str) -> None:
@@ -316,11 +230,10 @@ class WorkerVersions:
         )
 
     def update_triggers(self) -> None:
-        """Push the cron schedule and routes from the wrangler config.
+        """Sync configured triggers before migration or code promotion.
 
-        CRITICAL: this runs BEFORE the maintenance promote, so a cron-limit
-        failure - the incident this pipeline exists for - aborts with nothing
-        live.
+        Wrangler can apply some trigger changes before another fails. Recovery
+        must inspect the live settings even when the version did not change.
         """
         config = self._config
         self._reporter.step(f"Update triggers ({config.env})")
@@ -329,47 +242,17 @@ class WorkerVersions:
         )
         self._require(result)
 
-    def promote_maintenance_version(self) -> None:
-        config, state = self._config, self._state
-        self._reporter.step(f"Promote maintenance version to 100% ({config.env})")
-
-        # Marked in flight BEFORE the call, the same way the final promote is
-        # and for the same reason (see the flag's declaration in
-        # deploy_state.py). Rollback to a pinned version is idempotent, so a
-        # promote that did NOT apply just re-pins the version already serving.
-        def mark_attempt(in_flight: bool) -> None:
-            state.maint_promote_attempted = in_flight
-
-        # Idempotent: the version id pins the target, so repeating the call
-        # converges on the same traffic split.
-        self._promote(
-            "promote_maint",
-            state.new_maint_id,
-            version_message.MAINTENANCE,
-            mark_attempt,
-        )
-        state.maint_live = True
-        # Cleared on success: from here maint_live carries the rollback
-        # obligation, and a stale flag would roll back a deploy that completed.
-        state.maint_promote_attempted = False
-
     def promote_final_version(self) -> None:
         config, state = self._config, self._state
 
         def prepare_promotion() -> None:
-            if config.mode == deploy_config.WINDOWLESS:
-                self.verify_single_serving_version("before the final promotion")
+            self.verify_single_serving_version("before the final promotion")
             self._reporter.step(f"Promote final version to 100% ({config.env})")
 
         prepare_promotion()
 
-        # Marked in flight BEFORE the call, as for the maintenance promote:
-        # `versions deploy @100%` can apply server-side and still return
-        # non-zero after retries. On the windowless body maint_live is never
-        # true, so without this flag the recovery path would skip the rollback
-        # and leave the new, maybe-live version up while reporting "old version
-        # still serving". Rollback to a pinned version is idempotent, so a
-        # promote that did NOT apply just no-ops.
+        # A failed submission can have applied server-side. The runner marks
+        # ambiguous attempts and clears a rejected lookup before its retry.
         def mark_attempt(in_flight: bool) -> None:
             state.final_promote_attempted = in_flight
 
@@ -378,48 +261,12 @@ class WorkerVersions:
             state.new_final_id,
             version_message.FINAL,
             mark_attempt,
-            before_visibility_retry=(
-                prepare_promotion if config.mode == deploy_config.WINDOWLESS else None
-            ),
+            before_visibility_retry=prepare_promotion,
         )
-        state.maint_live = False
         # Cleared on success so a failure in a later step - the windowless
         # postflight, the closing timing - does not roll back a promote that
         # already landed.
         state.final_promote_attempted = False
-
-    def verify_final_version_is_serving(self) -> None:
-        """The promoted version, alone, at 100% - read back, not inferred.
-
-        The relocation body's gate on opening its target. The promote's exit
-        status says the call returned; this says what serves. Opening the
-        target under a version that does not read it would record the
-        relocation as complete while every write is still refused, so anything
-        but the final version serving alone aborts with source and target locked.
-        """
-        config, state = self._config, self._state
-        self._reporter.step(f"Verify the final version is what serves ({config.env})")
-        result = self._deployments_list()
-        if not result.ok:
-            emit_error(
-                "[FAIL] Could not read the serving set after the promotion - "
-                "refusing to open the target on an unverified serving state"
-            )
-            raise DeployAbort(1)
-        try:
-            observed = deployments_list.single_serving_version_id(result.stdout)
-        except deployments_list.Refused as refusal:
-            emit_error(f"[FAIL] single-version check failed: {refusal}")
-            raise DeployAbort(1) from refusal
-        if observed != state.new_final_id:
-            emit_error(
-                f"[FAIL] Promoted {state.new_final_id} and found {observed} "
-                "serving. Refusing to open the target."
-            )
-            raise DeployAbort(1)
-        emit(f"Serving version (single, 100%): {observed}")
-
-    # --- recovery ----------------------------------------------------------
 
     def roll_back_worker(self) -> bool:
         """Send all traffic back to the recorded previous version.
@@ -462,15 +309,8 @@ class WorkerVersions:
     def _single_serving_version(self, document: str) -> str:
         """The serving version id, fit to record as the rollback target.
 
-        The windowed and windowless captures come through here. The windowless
-        capture records the same id as the rollback target and TOCTOU reference,
-        so the usability check
-        belongs here rather than at either call site. The TOCTOU re-check reads
-        the extractor directly and stays outside it on purpose: it compares an
-        observed id against the recorded one and never hands it to wrangler, and
-        an id that fails this check would differ from the recorded one anyway,
-        which is already an abort. The expected-build bind is here for the
-        usability check's reason: every capture comes through it.
+        Capture validates the rollback target before passing it to Wrangler.
+        Later rechecks only compare against this captured version.
         """
         try:
             version_id = deployments_list.single_serving_version_id(document)
@@ -478,15 +318,7 @@ class WorkerVersions:
             emit_error(f"[FAIL] single-version check failed: {refusal}")
             emit_error(SPLIT_SERVING_REFUSAL)
             raise DeployAbort(1) from refusal
-        # An id the recovery path cannot spend is not a rollback target, so it
-        # is refused here rather than where it would be spent. Refused at the
-        # capture, the deploy stops with nothing uploaded, promoted or locked.
-        # Left to run, it reaches `wrangler rollback <id>` during recovery,
-        # where the rollback now fails cleanly rather than escaping - but a
-        # rollback that cannot run is still one that leaves the serving version
-        # unknown, which withholds the unlock and hands the operator a locked
-        # database to reconcile by hand. Refusing before the window opens is the
-        # cheaper end of the same invariant.
+        # Recovery must be able to pass the captured ID back to Wrangler.
         if not wrangler_runner.reaches_wrangler(version_id):
             emit_error(
                 "[FAIL] The serving version id cannot be passed back to wrangler,"
@@ -504,10 +336,8 @@ class WorkerVersions:
         version serving from any other - one a dashboard rollback brought back
         since, or one uploaded outside this pipeline - would have the run
         deploy over a state nobody checked. It is read where the id is
-        recorded, before the first mutation. On the windowless and relocation
-        bodies the TOCTOU re-checks then hold that id up to the first DB
-        mutation and the promote; the windowed body has no re-check, so there
-        the bind holds at the capture only.
+        recorded, before the first mutation. Rechecks hold the captured ID up
+        to migration and promotion.
         """
         expected = self._config.expected_serving_sha
         document = view_version(
@@ -602,13 +432,7 @@ class WorkerVersions:
                 "--message",
                 f"deploy-pipeline promote {kind} ({self._config.sha})",
             ],
-            # The relocation has fenced writes. A missing target must return
-            # to forward recovery without a toolkit propagation wait.
-            retry_lookup_for=(
-                None
-                if self._config.mode == deploy_config.RELOCATION
-                else self._state.uploaded_version
-            ),
+            retry_lookup_for=self._state.uploaded_version,
             before_visibility_retry=before_visibility_retry,
             mark_attempt=mark_attempt,
         )

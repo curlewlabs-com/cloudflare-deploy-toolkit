@@ -1,20 +1,7 @@
-"""Bootstrap and serving-version decisions for a `wrangler deployments list
---json` document.
+"""Extract the single serving version from Wrangler's deployment history.
 
-The decisions are pure: a document in, a verdict out, no Cloudflare connection.
-They are here rather than inline in the pipeline because they are what the deploy's
-rollback target and its TOCTOU re-checks are built on, and a decision that
-can be driven against a real JSON shape with no connection is one that can be
-tested against every shape that has to refuse.
-
-AFFIRMATIVE ONLY, which is the same deny-on-unmodeled discipline the
-consumer-side serving-set extractors follow. Neither answers "close enough". A
-gradual split, a partial percentage, an unusable id, or a document that is not
-the expected shape all refuse, because the caller's next move is to record a
-rollback target or to assert that the serving set did not move underneath it -
-and a wrong answer there is a rollback that restores the wrong code, or a
-mid-deploy change nobody noticed. Refusing costs a deploy that has to be
-re-dispatched; guessing costs the invariant.
+A gradual split has no unique rollback target. Unreadable or unexpected shapes
+must stop the deploy before the version is used for recovery or re-verification.
 """
 
 from __future__ import annotations
@@ -42,31 +29,6 @@ def _parse(raw: str) -> object:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise Refused(f"deployments list is not valid JSON: {exc}") from exc
-
-
-def is_bootstrap_shape(raw: str) -> bool:
-    """True when the document says this Worker has never served a version.
-
-    The one emptiness a deploy may legitimately continue through: with no
-    deployment, or no version under the newest one, there is no rollback target
-    to record and nothing for the single-version invariant to describe. Kept
-    apart from the extractor below so that "nothing has deployed yet" can never
-    be reached by an extraction failure - otherwise a staging deploy proceeds
-    with no rollback target on evidence nobody checked.
-    """
-    try:
-        document = _parse(raw)
-    except Refused:
-        return False
-    if not _is_json_array(document):
-        return False
-    if not document:
-        return True
-    newest = document[-1]
-    if not _is_json_object(newest):
-        return False
-    versions = newest.get("versions")
-    return _is_json_array(versions) and not versions
 
 
 def single_serving_version_id(raw: str) -> str:

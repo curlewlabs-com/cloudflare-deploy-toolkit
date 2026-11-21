@@ -2,16 +2,8 @@
 """Suite for the one rule the summary writer has: it never raises.
 
 The step summary is operator-facing logging, and the recovery path writes to it
-between the failure report and the D1 restore, worker rollback and unlock. An
-exception out of `summary` stops the deploy there - maintenance version serving,
-database still locked, no recovery attempted - and the next deploy then refuses
-to start on a lock it cannot prove is clear. So the cases below are about what
-the writer swallows, not about what it produces.
-
-The pipeline-level proof that recovery survives a broken summary is the bats
-case that drives a whole deploy. These cases cover the failure members that case
-cannot reach: an unwritable file is easy to arrange from outside, an unencodable
-line is not.
+before it attempts a Worker rollback. A logging failure must not interrupt
+recovery, even for an ID containing a byte that UTF-8 cannot encode.
 """
 
 from __future__ import annotations
@@ -34,7 +26,7 @@ import deploy_reporting
 
 # What wrangler_runner.py's surrogateescape decode puts in a str when the
 # Cloudflare API renders a byte that is not UTF-8. It reaches the summary
-# through the version ids, the bookmark and the lock state the failure table
+# through the version IDs the failure table
 # reports, and encoding it raises UnicodeEncodeError - a ValueError, so an
 # `except OSError` around the write does not see it.
 LONE_SURROGATE = b"\xff".decode("utf-8", errors="surrogateescape")
@@ -89,7 +81,7 @@ class SummaryIsBestEffort(unittest.TestCase):
         target = self.root / "summary.md"
         reporter, stderr = self.reporter_and_stderr(target)
 
-        reporter.summary(f"| Bookmark | {LONE_SURROGATE} |")
+        reporter.summary(f"| Previous version | {LONE_SURROGATE} |")
         reporter.summary("| Maintenance live | true |")
         target.write_text("", encoding="utf-8")
         reporter.summary("| Lock state | locked |")
