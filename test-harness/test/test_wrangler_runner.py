@@ -28,9 +28,11 @@ MODULE = (
 
 sys.path.insert(0, str(MODULE.parent))
 
+import deploy_reporting
 import deploy_state
 import deploy_versions
 import wrangler_runner
+from test_deploy_config import staging
 
 # What wrangler_runner's own surrogateescape decode produces from a byte the
 # Cloudflare API rendered that is not UTF-8.
@@ -93,7 +95,6 @@ class ScriptedRunner(wrangler_runner.WranglerRunner):
         super().__init__(
             wrangler=["wrangler"],
             backoff_seconds=backoff,
-            state=deploy_state.PipelineState(new_final_id="id"),
         )
         self._answers = answers
         self.attempts = 0
@@ -107,11 +108,14 @@ class ScriptedRunner(wrangler_runner.WranglerRunner):
 class UploadVisibility(unittest.TestCase):
     """Only the run's uploaded versions can spend the visibility budget."""
 
+    def setUp(self) -> None:
+        self.state = deploy_state.PipelineState(new_final_id="id")
+
     def test_uploaded_version_appears_after_ordinary_retries_are_spent(self) -> None:
         runner = ScriptedRunner([NOT_FOUND] * 5 + [FOUND], backoff=None)
         with patch("wrangler_runner.time.sleep") as sleep:
             self.assertEqual(
-                deploy_versions.view_version(runner, "staging", "id"),
+                deploy_versions.view_version(runner, "staging", "id", self.state),
                 {},
             )
         # The incident exhausted the old wall-clock window as well as its attempts.
@@ -121,29 +125,64 @@ class UploadVisibility(unittest.TestCase):
     def test_permanently_invisible_upload_still_aborts(self) -> None:
         runner = ScriptedRunner([NOT_FOUND] * 6, backoff=None)
         with patch("wrangler_runner.time.sleep"):
-            self.assertIsNone(deploy_versions.view_version(runner, "staging", "id"))
+            self.assertIsNone(
+                deploy_versions.view_version(runner, "staging", "id", self.state)
+            )
 
     def test_transport_failure_cannot_spend_the_extra_visibility_budget(self) -> None:
         transport = wrangler_runner.WranglerResult(1, "", "fetch failed")
         runner = ScriptedRunner([NOT_FOUND] * 4 + [transport], backoff=None)
         with patch("wrangler_runner.time.sleep"):
-            self.assertIsNone(deploy_versions.view_version(runner, "staging", "id"))
+            self.assertIsNone(
+                deploy_versions.view_version(runner, "staging", "id", self.state)
+            )
         self.assertEqual(runner.retries, 4)
 
     def test_promotion_can_outlast_the_ordinary_retry_budget(self) -> None:
         # The deploy endpoint can lag even after the read endpoint caught up.
         runner = ScriptedRunner([NOT_FOUND] * 5 + [FOUND], backoff=None)
         with patch("wrangler_runner.time.sleep"):
-            result = runner.run_version("promote_final", "deploy", "id", [])
+            result = runner.run_version(
+                "promote_final",
+                "deploy",
+                "id",
+                [],
+                retry_lookup_for=self.state.uploaded_version,
+            )
         self.assertTrue(result.ok)
         self.assertEqual(runner.attempts, 6)
 
     def test_promotion_respects_an_explicit_retry_budget(self) -> None:
         # A permanently missing version must return control to recovery.
         runner = ScriptedRunner([NOT_FOUND] * 4)
-        result = runner.run_version("promote_final", "deploy", "id", [])
+        result = runner.run_version(
+            "promote_final",
+            "deploy",
+            "id",
+            [],
+            retry_lookup_for=self.state.uploaded_version,
+        )
         self.assertFalse(result.ok)
         self.assertEqual(runner.attempts, 4)
+
+    def test_direct_windowless_promotion_refuses_a_replaced_serving_version(
+        self,
+    ) -> None:
+        # A caller promoting a final version cannot omit the serving check.
+        live = '[{"versions":[{"version_id":"intervening","percentage":100}]}]'
+        runner = ScriptedRunner([wrangler_runner.WranglerResult(0, live, "")])
+        self.state.serving_version_id = "previous"
+        versions = deploy_versions.WorkerVersions(
+            staging(DEPLOY_PIPELINE_MODE="windowless"),
+            self.state,
+            runner=runner,
+            reporter=deploy_reporting.Reporter(
+                github_actions=False, step_summary_path=None
+            ),
+        )
+        with self.assertRaises(deploy_state.DeployAbort):
+            versions.promote_final_version()
+        self.assertFalse(self.state.final_promote_attempted)
 
     def test_lost_response_preserves_in_flight_recovery(self) -> None:
         runner = ScriptedRunner(
@@ -162,6 +201,7 @@ class UploadVisibility(unittest.TestCase):
                 "deploy",
                 "id",
                 [],
+                retry_lookup_for=self.state.uploaded_version,
                 before_visibility_retry=guard,
                 mark_attempt=in_flight.append,
             ).ok
@@ -180,6 +220,7 @@ class UploadVisibility(unittest.TestCase):
                 "deploy",
                 "id",
                 [],
+                retry_lookup_for=self.state.uploaded_version,
                 before_visibility_retry=lambda: None,
                 mark_attempt=in_flight.append,
             ).ok
@@ -190,7 +231,9 @@ class UploadVisibility(unittest.TestCase):
     def test_previous_version_not_found_is_final(self) -> None:
         # Every other read of a version id takes not-found as the answer.
         runner = ScriptedRunner([NOT_FOUND, FOUND])
-        self.assertIsNone(deploy_versions.view_version(runner, "staging", "old-id"))
+        self.assertIsNone(
+            deploy_versions.view_version(runner, "staging", "old-id", self.state)
+        )
         self.assertEqual(runner.attempts, 1)
 
 

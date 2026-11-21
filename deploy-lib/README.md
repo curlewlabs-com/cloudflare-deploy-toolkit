@@ -130,8 +130,8 @@ update triggers                <- cron-limit failures still land here, before an
 re-verify serving version      <- TOCTOU re-check, immediately before the first DB mutation
 migrate                        <- consumer hook (atomic imports; failure = fix forward)
 upload final version
-check its runtime              <- only with DEPLOY_EXPECTED_RUNTIME; old version still serving
-re-verify serving version      <- TOCTOU re-check, immediately before promotion
+check its runtime              <- only with DEPLOY_EXPECTED_RUNTIME; checks the uploaded version
+re-verify serving version      <- before promotion and each retry of a rejected target lookup
 promote final version          <- rollback if an attempt may have changed traffic
 postflight check               <- consumer hook; failure after the promote is a
                                  loud red with NO automatic recovery
@@ -187,7 +187,10 @@ pipeline, including when the child runs before its parent's spawn call returns.
 
 An exit path runs on every exit, with concentric recovery layers:
 
-- **`maint_live=false`, no `bookmark`**: Exit clean - old version still serving
+- **`maint_live=false`, no `bookmark`, no promotion in flight**: Recovery leaves
+  traffic untouched. If a serving check refused the promotion or its retry,
+  inspect the live deployments and resolve any unexpected version or traffic
+  split before re-dispatch.
 - **...same, but a promote was in flight**: `wrangler rollback` to
   `prev_version_id` (worker only, never a restore). Either promote counts:
   `versions deploy <id>@100%` can apply server-side and still report failure, so
@@ -256,8 +259,9 @@ Serialize deploys to each environment and leave its traffic split and database
 locks under pipeline control through recovery. On a windowless visibility
 retry the pipeline checks the serving version again before sending the pinned
 promotion. During relocation the source is already fenced when promotion
-starts. A missing target there enters the usual forward recovery immediately,
-so waiting for propagation cannot extend the write pause.
+starts. When Wrangler reports the target missing, the toolkit goes straight to
+forward recovery. Wrangler can still wait inside that invocation, extending
+the write pause.
 
 The wrangler retry loop layers beneath the lock read-back verify: a retry on the
 lock UPDATE may succeed on the second attempt, but if it does not, the read-back
