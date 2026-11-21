@@ -65,10 +65,12 @@ def view_version(
     failed call, and this function's own line for a call that succeeded without
     printing a document, which can leave nothing on stderr at all.
     """
-    result = runner.run(
+    result = runner.run_version(
         "versions_view",
-        ["versions", "view", version_id, "--json", "--env", wrangler_env],
-        just_uploaded=state.uploaded_version(version_id),
+        "view",
+        version_id,
+        ["--json", "--env", wrangler_env],
+        retry_lookup_for=state.uploaded_version,
     )
     if not result.ok:
         return None
@@ -589,12 +591,11 @@ class WorkerVersions:
         *,
         before_visibility_retry: Callable[[], None] | None = None,
     ) -> None:
-        result = self._runner.run(
+        result = self._runner.run_version(
             label,
+            "deploy",
+            version_id,
             [
-                "versions",
-                "deploy",
-                f"{version_id}@100%",
                 "--env",
                 self._config.wrangler_env,
                 "--yes",
@@ -603,11 +604,11 @@ class WorkerVersions:
             ],
             # The relocation has fenced writes. A missing target must return
             # to forward recovery without a toolkit propagation wait.
-            just_uploaded=(
-                self._config.mode != deploy_config.RELOCATION
-                and self._state.uploaded_version(version_id)
+            retry_lookup_for=(
+                None
+                if self._config.mode == deploy_config.RELOCATION
+                else self._state.uploaded_version
             ),
-            promotion_id=version_id,
             before_visibility_retry=before_visibility_retry,
             mark_attempt=mark_attempt,
         )

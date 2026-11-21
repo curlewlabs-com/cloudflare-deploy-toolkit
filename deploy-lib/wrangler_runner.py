@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
+from typing import Literal
 
 import retry_sleep
 import wrangler_transient
@@ -172,12 +173,37 @@ class WranglerRunner:
         """Retries performed across the run, for the diagnostics bundle."""
         return self._retries
 
-    def run(
+    def run(self, label: str, args: Sequence[str]) -> WranglerResult:
+        return self._run(label, args, just_uploaded=False)
+
+    def run_version(
+        self,
+        label: str,
+        operation: Literal["view", "deploy"],
+        version_id: str,
+        options: Sequence[str],
+        *,
+        retry_lookup_for: Callable[[str], bool] | None,
+        before_visibility_retry: Callable[[], None] | None = None,
+        mark_attempt: Callable[[bool], None] | None = None,
+    ) -> WranglerResult:
+        """Tie the visibility budget to the same id that wrangler receives."""
+        target = f"{version_id}@100%" if operation == "deploy" else version_id
+        return self._run(
+            label,
+            ["versions", operation, target, *options],
+            just_uploaded=retry_lookup_for is not None and retry_lookup_for(version_id),
+            promotion_id=version_id if operation == "deploy" else None,
+            before_visibility_retry=before_visibility_retry,
+            mark_attempt=mark_attempt,
+        )
+
+    def _run(
         self,
         label: str,
         args: Sequence[str],
         *,
-        just_uploaded: bool = False,
+        just_uploaded: bool,
         before_visibility_retry: Callable[[], None] | None = None,
         mark_attempt: Callable[[bool], None] | None = None,
         promotion_id: str | None = None,

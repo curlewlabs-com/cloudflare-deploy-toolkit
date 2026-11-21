@@ -142,11 +142,12 @@ class UploadVisibility(unittest.TestCase):
         # The deploy endpoint can lag even after the read endpoint caught up.
         runner = ScriptedRunner([NOT_FOUND] * 5 + [FOUND], backoff=None)
         with patch("wrangler_runner.time.sleep"):
-            result = runner.run(
+            result = runner.run_version(
                 "promote_final",
-                ["versions", "deploy", "id@100%"],
-                promotion_id="id",
-                just_uploaded=True,
+                "deploy",
+                "id",
+                [],
+                retry_lookup_for=self.state.uploaded_version,
             )
         self.assertTrue(result.ok)
         self.assertEqual(runner.attempts, 6)
@@ -154,11 +155,12 @@ class UploadVisibility(unittest.TestCase):
     def test_promotion_respects_an_explicit_retry_budget(self) -> None:
         # A permanently missing version must return control to recovery.
         runner = ScriptedRunner([NOT_FOUND] * 4)
-        result = runner.run(
+        result = runner.run_version(
             "promote_final",
-            ["versions", "deploy", "id@100%"],
-            promotion_id="id",
-            just_uploaded=True,
+            "deploy",
+            "id",
+            [],
+            retry_lookup_for=self.state.uploaded_version,
         )
         self.assertFalse(result.ok)
         self.assertEqual(runner.attempts, 4)
@@ -194,11 +196,12 @@ class UploadVisibility(unittest.TestCase):
 
         in_flight: list[bool] = []
         self.assertFalse(
-            runner.run(
+            runner.run_version(
                 "promote",
-                ["versions", "deploy", "id@100%"],
-                promotion_id="id",
-                just_uploaded=True,
+                "deploy",
+                "id",
+                [],
+                retry_lookup_for=self.state.uploaded_version,
                 before_visibility_retry=guard,
                 mark_attempt=in_flight.append,
             ).ok
@@ -212,11 +215,12 @@ class UploadVisibility(unittest.TestCase):
         )
         in_flight: list[bool] = []
         self.assertFalse(
-            runner.run(
+            runner.run_version(
                 "promote",
-                ["versions", "deploy", "id@100%"],
-                promotion_id="id",
-                just_uploaded=True,
+                "deploy",
+                "id",
+                [],
+                retry_lookup_for=self.state.uploaded_version,
                 before_visibility_retry=lambda: None,
                 mark_attempt=in_flight.append,
             ).ok
