@@ -77,7 +77,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SERVICE_DIR/../.." && pwd)"
-DEPLOY_TOOLKIT_DIR="$REPO_ROOT/vendor/cloudflare-deploy-toolkit"
+export DEPLOY_TOOLKIT_DIR="$REPO_ROOT/vendor/cloudflare-deploy-toolkit"
 
 # === required config (exported: a subprocess reads its environment) ===
 export DEPLOY_WRANGLER_ENV_STAGING="staging"

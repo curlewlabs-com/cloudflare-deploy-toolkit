@@ -107,8 +107,12 @@ case "$*" in
 *"triggers deploy"*)
     STEP=triggers
     ;;
-*"versions deploy"*"22222222"*)
-    STEP=promote_final
+*"versions deploy"*)
+    if [ "${1:-} ${2:-} ${3:-}" = "versions deploy 22222222-2222-2222-2222-222222222222@100%" ]; then
+        STEP=promote_final
+    else
+        STEP=other
+    fi
     ;;
 *"rollback"*)
     STEP=wrangler_rollback

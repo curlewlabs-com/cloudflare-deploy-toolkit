@@ -272,4 +272,5 @@ assert_step_called_n_times() {
   [ "$status" -eq 0 ]
   assert_step_called_n_times 3 upload_final
   assert_step_called_n_times 1 promote_final
+  grep -Fq "versions deploy 22222222-2222-2222-2222-222222222222@100% --env staging" "$CALLS_LOG"
 }
