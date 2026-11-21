@@ -9,12 +9,9 @@ welcome.
 
 ## Before a large change
 
-Open an issue describing the problem first. The recovery layers and the unlock
-obligation in `deploy-lib/deploy_recovery.py`, the `_deploy_lock` read-backs in
-`deploy-lib/deploy_lock.py`, and the relocation's lock states in
-`deploy-lib/deploy_relocation.py` carry the safety guarantees, and
-[`deploy-lib/README.md`](deploy-lib/README.md) says what each body does when a
-step fails. A short discussion up front saves rework.
+Open an issue describing the proposed change in terms of the serving version,
+compatible migrations and promotion recovery. The [pipeline guide](deploy-lib/README.md)
+describes the result of a failure at each step.
 
 ## Releasing
 

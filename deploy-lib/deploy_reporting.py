@@ -38,11 +38,7 @@ def configure_stdout() -> None:
     Why it is needed: wrangler_runner decodes the API's streams with
     surrogateescape, deliberately, so the transient classifier sees the text
     Cloudflare actually sent. A byte that is not UTF-8 therefore reaches the
-    version ids, bookmarks and lock states this module prints, and Python's
-    stdout is `strict` by default - so printing one raised UnicodeEncodeError
-    and took the deploy with it, at whichever step did the printing. The
-    bookmark line runs after the promote and after the lock, which put that
-    abort past the point of no return.
+    version IDs and diagnostics. Rendering it must not interrupt rollback.
 
     `backslashreplace` is what stderr already uses (Python's own default, and
     unchanged by PYTHONIOENCODING), so stdout and stderr agree and the operator
@@ -92,9 +88,7 @@ class Reporter:
 
         The summary is operator-facing logging and must never take the recovery
         path with it: an unwritable file raising out of here would abort the
-        pipeline mid-recovery - between the failure report and the D1 restore,
-        worker rollback and unlock that follow it - leaving the product on the
-        maintenance version with the lock still set. The first failure reports
+        pipeline between the failure report and the Worker rollback. The first failure reports
         once, to stderr and never back through here, and turns the writer off
         for the rest of the run, because every remaining line would fail the
         same way and repeat the same message.
@@ -110,7 +104,7 @@ class Reporter:
             # Broad on purpose, like the recovery layers' own catch: the class
             # is "this line could not be written", and it has more members than
             # an unwritable file. wrangler_runner decodes the API's bytes with
-            # surrogateescape, so a version id or bookmark the summary reports
+            # surrogateescape, so a version id the summary reports
             # can carry a lone surrogate, and encoding one raises
             # UnicodeEncodeError - a ValueError, which no OSError catch sees.
             # Enumerating members is what left the original write exposed.

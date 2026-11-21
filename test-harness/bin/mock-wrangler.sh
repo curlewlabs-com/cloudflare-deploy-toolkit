@@ -54,13 +54,6 @@
 #                      Exit code is 1 for transient failures, 10 for auth
 #                      (each distinct from MOCK_FAIL_AT's 73 so the
 #                      modes don't silently converge).
-#   MOCK_PER_DB_LOCK_STATE - when 1, each database named after `d1 execute`
-#                      keeps its own lock state, in "$MOCK_LOG_FILE.lock_state.
-#                      <name>" (a test seeds a database's initial state by
-#                      writing that file; unseeded ones start from
-#                      MOCK_INITIAL_LOCK_STATE). A relocation has a source and
-#                      a target, and one shared state cannot hold a fenced
-#                      source beside a target that was never filled.
 #   MOCK_SERVING_AFTER_PROMOTE - what `deployments list` reports once a final
 #                      promote has returned, in place of the promoted version: a
 #                      version id, or `split` for a gradual deployment across
@@ -70,21 +63,9 @@
 #                      reports, in place of the versions_view fixture's. Stands
 #                      in for a serving version uploaded from another build, or
 #                      outside the pipeline.
-#   MOCK_DELAY_AT - "<step>:<seconds>": every invocation of <step> takes that
-#                      long. Stands in for a Cloudflare call that is slow rather
-#                      than failing, which is what a time budget has to survive.
-#   MOCK_LOCK_STATE_AT - "<step>:<database>:<state>": when <step> is invoked,
-#                      <database>'s lock state becomes <state> (needs
-#                      MOCK_PER_DB_LOCK_STATE). Stands in for another actor
-#                      taking a lock while a deploy is part-way through.
 #
-# Steps the mock recognizes (these are the names that go in MOCK_FAIL_AT
-# and the basenames of fixture files):
-#   deployments_list, versions_view, upload_maint, upload_final, triggers,
-#   promote_maint, promote_final, lock, lock_state, unlock, bookmark,
-#   tt_restore, wrangler_rollback - the calls the pipeline itself makes. A
-#   consumer's own hook queries are its own to stub; anything else is `other`
-#   and emits nothing.
+# Named steps correspond to the Wrangler operations in the case below.
+# Unrecognized hook calls are recorded as other.
 #
 # Why this mock and not bats-mock: bats-mock provides PATH-injection and call
 # recording, but does not handle fixture-file replay or named-step failure
@@ -111,20 +92,8 @@ if [ ! -d "$FIXTURE_DIR" ]; then
     exit 99
 fi
 
-LOCK_STATE_FILE="$MOCK_LOG_FILE.lock_state"
-if [ "${MOCK_PER_DB_LOCK_STATE:-}" = "1" ] && [ "${1:-} ${2:-}" = "d1 execute" ] && [ -n "${3:-}" ]; then
-    LOCK_STATE_FILE="$LOCK_STATE_FILE.$3"
-fi
-if [ ! -f "$LOCK_STATE_FILE" ]; then
-    printf '%s\n' "${MOCK_INITIAL_LOCK_STATE:-unlocked}" >"$LOCK_STATE_FILE"
-fi
-LOCK_STATE=$(cat "$LOCK_STATE_FILE")
 PROMOTED_FILE="$MOCK_LOG_FILE.promoted"
-# Classify the invocation by inspecting all args. The classification is
-# generic - it matches against wrangler subcommand patterns rather than any
-# consumer-specific naming. The slot UUIDs (11111111 / 22222222) come from
-# lib/test-slots.sh and are replicated here in the case patterns because
-# `case` doesn't expand variables in patterns.
+# A promotion is recognized only when it spends the uploaded fixture's ID.
 case "$*" in
 *"deployments list"*"--json"*)
     STEP=deployments_list
@@ -132,35 +101,14 @@ case "$*" in
 *"versions view"*)
     STEP=versions_view
     ;;
-*"versions upload"*"MAINTENANCE_MODE:true"*)
-    STEP=upload_maint
-    ;;
 *"versions upload"*)
     STEP=upload_final
     ;;
 *"triggers deploy"*)
     STEP=triggers
     ;;
-*"versions deploy"*"11111111"*)
-    STEP=promote_maint
-    ;;
 *"versions deploy"*"22222222"*)
     STEP=promote_final
-    ;;
-*"d1 execute"*"SELECT locked FROM _deploy_lock WHERE id = 1"* | *"d1 execute"*"SELECT id, locked FROM _deploy_lock ORDER BY id;"*)
-    STEP=lock_state
-    ;;
-*"d1 execute"*"locked = 1"*)
-    STEP=lock
-    ;;
-*"d1 execute"*"locked = 0"*)
-    STEP=unlock
-    ;;
-*"d1 time-travel info"*)
-    STEP=bookmark
-    ;;
-*"d1 time-travel restore"*)
-    STEP=tt_restore
     ;;
 *"rollback"*)
     STEP=wrangler_rollback
@@ -172,15 +120,6 @@ esac
 
 echo "$STEP $*" >>"$MOCK_LOG_FILE"
 
-if [ -n "${MOCK_DELAY_AT:-}" ] && [ "${MOCK_DELAY_AT%%:*}" = "$STEP" ]; then
-    sleep "${MOCK_DELAY_AT#*:}"
-fi
-
-if [ -n "${MOCK_LOCK_STATE_AT:-}" ] && [ "${MOCK_LOCK_STATE_AT%%:*}" = "$STEP" ]; then
-    _mock_rest="${MOCK_LOCK_STATE_AT#*:}"
-    printf '%s\n' "${_mock_rest#*:}" >"$MOCK_LOG_FILE.lock_state.${_mock_rest%%:*}"
-fi
-
 # Inject failure if requested. Exit 73 is arbitrary but distinct from any real
 # wrangler exit code we care about, making mock-injected failures easy to spot
 # in test output.
@@ -191,11 +130,6 @@ fi
 # shellcheck disable=SC2086
 for _mock_fail_step in ${MOCK_FAIL_AT:-}; do
     [ "$STEP" = "$_mock_fail_step" ] || continue
-    case "${MOCK_FAIL_SIDE_EFFECT_LOCK_STATE:-}" in
-    locked | unlocked | missing)
-        printf '%s\n' "$MOCK_FAIL_SIDE_EFFECT_LOCK_STATE" >"$LOCK_STATE_FILE"
-        ;;
-    esac
     echo "mock-wrangler: injected failure at step=$STEP" >&2
     exit 73
 done
@@ -223,6 +157,12 @@ if [ -n "${MOCK_TRANSIENT_FAIL_AT:-}" ]; then
             _mt_remaining=$((_mt_remaining - 1))
             printf '%s\n' "$_mt_remaining" >"$_mt_state_file"
             case "$_mt_pattern" in
+            upload_id_then_fetch_failed)
+                # A failed attempt can still have emitted a syntactically valid ID.
+                echo "Worker Version ID: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                echo "[ERROR] fetch failed" >&2
+                exit 1
+                ;;
             fetch_failed)
                 echo "[ERROR] fetch failed" >&2
                 exit 1
@@ -337,12 +277,6 @@ if [ -n "${MOCK_TRANSIENT_FAIL_AT:-}" ]; then
 fi
 
 case "$STEP" in
-lock)
-    printf '%s\n' "locked" >"$LOCK_STATE_FILE"
-    ;;
-unlock)
-    printf '%s\n' "unlocked" >"$LOCK_STATE_FILE"
-    ;;
 promote_final)
     # The serving set follows a promote, so a read made after one sees what was
     # promoted rather than the fixture's fixed answer.
@@ -350,21 +284,17 @@ promote_final)
     ;;
 esac
 
-LOCK_STATE=$(cat "$LOCK_STATE_FILE")
-
 # Cat the fixture file for this step. JSON-shaped fixtures (parsed by jq in
 # consumer deploy scripts) get the .json extension; everything else is .txt.
-# Steps that have no parsed output (lock, unlock, triggers, promote_*,
-# tt_restore, wrangler_rollback) have empty .txt fixture files in the
-# consumer's fixture dir - the cat is still real, it just emits nothing,
-# mirroring wrangler's quiet-success behavior for these commands.
 case "$STEP" in
 deployments_list)
     if [ -f "$MOCK_LOG_FILE.unreadable_deployments" ]; then
         echo "[ERROR] Cannot read the serving set" >&2
         exit 1
     fi
-    if [ -s "$PROMOTED_FILE" ] && [ "${MOCK_SERVING_AFTER_PROMOTE:-}" = "split" ]; then
+    if [ -n "${MOCK_AFTER_TRIGGERS_DEPLOYMENTS:-}" ] && grep -q '^triggers ' "$MOCK_LOG_FILE"; then
+        cat "$MOCK_AFTER_TRIGGERS_DEPLOYMENTS"
+    elif [ -s "$PROMOTED_FILE" ] && [ "${MOCK_SERVING_AFTER_PROMOTE:-}" = "split" ]; then
         printf '[{"id":"00000000-0000-0000-0000-cccccccccccc","versions":[{"version_id":"%s","percentage":50},{"version_id":"00000000-0000-0000-0000-000000000000","percentage":50}]}]\n' "$(cat "$PROMOTED_FILE")"
     elif [ -s "$PROMOTED_FILE" ]; then
         printf '[{"id":"00000000-0000-0000-0000-cccccccccccc","versions":[{"version_id":"%s","percentage":100}]}]\n' "${MOCK_SERVING_AFTER_PROMOTE:-$(cat "$PROMOTED_FILE")}"
@@ -379,29 +309,8 @@ versions_view)
         cat "$FIXTURE_DIR/$STEP.json"
     fi
     ;;
-bookmark)
-    cat "$FIXTURE_DIR/$STEP.json"
-    ;;
-upload_maint | upload_final | triggers | promote_maint | promote_final | lock | unlock | tt_restore | wrangler_rollback)
+upload_final | triggers | promote_final | wrangler_rollback)
     cat "$FIXTURE_DIR/$STEP.txt"
-    ;;
-lock_state)
-    case "$LOCK_STATE" in
-    locked)
-        printf '%s\n' '[{"results":[{"id":1,"locked":1}]}]'
-        ;;
-    unlocked)
-        printf '%s\n' '[{"results":[{"id":1,"locked":0}]}]'
-        ;;
-    missing)
-        printf '%s\n' '{"error":{"text":"no such table: _deploy_lock: SQLITE_ERROR"}}'
-        exit 1
-        ;;
-    *)
-        echo "mock-wrangler: unknown lock state '$LOCK_STATE'" >&2
-        exit 99
-        ;;
-    esac
     ;;
 other)
     : # unknown wrangler subcommand - emit nothing

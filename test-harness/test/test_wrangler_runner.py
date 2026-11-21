@@ -173,7 +173,7 @@ class UploadVisibility(unittest.TestCase):
         runner = ScriptedRunner([wrangler_runner.WranglerResult(0, live, "")])
         self.state.serving_version_id = "previous"
         versions = deploy_versions.WorkerVersions(
-            staging(DEPLOY_PIPELINE_MODE="windowless"),
+            staging(),
             self.state,
             runner=runner,
             reporter=deploy_reporting.Reporter(

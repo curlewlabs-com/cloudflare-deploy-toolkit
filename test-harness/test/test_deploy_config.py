@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """Suite for what a deploy run is asked to do, and what it refuses at startup.
 
-The classes of case, and the second is the one worth having. Parsing argv
-decides the sha stamped into every uploaded version's immutable annotations, so
-a form that silently produces the wrong one is a version nobody can attribute
-later. The refusals decide whether a misconfigured run stops before the first
-wrangler call or part-way through a maintenance window - and the migrate hook is
-the case that earns the class: the step that runs it is reached, on the windowed
-body, only after the maintenance version is serving and the database is locked,
-so a refusal deferred to that step costs a full three-layer recovery.
+A wrong SHA mislabels an immutable upload. A missing migration hook must fail
+before the first change to the deployment.
 """
 
 from __future__ import annotations
@@ -26,7 +20,8 @@ import deploy_config
 # The smallest environment that describes a deploy. Cases start from this and
 # remove or replace one entry, so what each one is about is the diff.
 COMPLETE = {
-    "DEPLOY_DB_STAGING": "example-db-staging",
+    "DEPLOY_PIPELINE_MODE": "windowless-v1",
+    "WINDOWLESS_PREFLIGHT_CMD": "true",
     "DEPLOY_WRANGLER_ENV_STAGING": "staging",
     "MIGRATE_CMD": "true",
 }
@@ -123,15 +118,10 @@ class ArgumentParsing(unittest.TestCase):
 class StartupRefusals(unittest.TestCase):
     def test_a_complete_environment_resolves(self) -> None:
         config = staging()
-        self.assertEqual(config.mode, deploy_config.WINDOWED)
-        self.assertEqual(config.db_name, "example-db-staging")
         self.assertEqual(config.wrangler_env, "staging")
         self.assertEqual(config.migrate_cmd, ("true",))
 
     def test_a_missing_migrate_command_refuses_before_anything_runs(self) -> None:
-        # The whole reason this check is at startup: on the windowed body the
-        # step that would have caught it runs after the maintenance version is
-        # serving, so the consumer pays a three-layer recovery to learn it.
         environ = {
             key: value for key, value in COMPLETE.items() if key != "MIGRATE_CMD"
         }
@@ -147,13 +137,13 @@ class StartupRefusals(unittest.TestCase):
             staging(DEPLOY_PIPELINE_MODE="windowlss")
         self.assertIn("unrecognized DEPLOY_PIPELINE_MODE", str(refusal.exception))
 
-    def test_an_unset_mode_is_the_windowed_body(self) -> None:
-        # The conservative default: every protection on for a consumer that has
-        # not opted into routing.
-        self.assertEqual(staging().mode, deploy_config.WINDOWED)
+    def test_retired_modes_refuse_before_deployment(self) -> None:
+        for mode in ("windowless", "windowed", "relocation"):
+            with self.subTest(mode=mode), self.assertRaises(deploy_config.ConfigError):
+                staging(DEPLOY_PIPELINE_MODE=mode)
 
     def test_config_for_the_other_environment_does_not_stand_in(self) -> None:
-        # A production deploy reading the staging database name is the failure
+        # A production deploy reading the staging Worker environment is the failure
         # this refusal exists for.
         with self.assertRaises(deploy_config.ConfigError):
             deploy_config.resolve(
@@ -162,17 +152,9 @@ class StartupRefusals(unittest.TestCase):
             )
 
     def test_a_duration_the_pipeline_cannot_wait_refuses(self) -> None:
-        # The shell passed each of these to `sleep`, which failed at the moment
-        # it was used - minutes into a deploy, on the windowed body after the
-        # maintenance version is already serving. Negative counts as unwaitable
-        # alongside non-numeric: a schedule the pipeline silently read as zero
-        # is a retry budget nobody has.
         for field, value in (
             ("DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS", "2 soon 15"),
             ("DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS", "2 -5 15"),
-            ("DEPLOY_VERIFY_BACKOFF_SECONDS", "1 2 later"),
-            ("DEPLOY_DRAIN_SECONDS", "quickly"),
-            ("DEPLOY_DRAIN_SECONDS", "-1"),
         ):
             with (
                 self.subTest(field=field, value=value),
@@ -192,10 +174,24 @@ class StartupRefusals(unittest.TestCase):
         config = staging(MIGRATE_CMD="'/opt/my tools/migrate.sh' --strict")
         self.assertEqual(config.migrate_cmd, ("/opt/my tools/migrate.sh", "--strict"))
 
-    def test_the_optional_hooks_are_absent_rather_than_empty(self) -> None:
-        config = staging(PREFLIGHT_CMD="   ")
-        self.assertIsNone(config.preflight_cmd)
-        self.assertIsNone(config.postflight_cmd)
+    def test_upgrading_requires_a_new_preflight_and_explicit_mode(self) -> None:
+        for key in ("DEPLOY_PIPELINE_MODE", "WINDOWLESS_PREFLIGHT_CMD"):
+            for empty in (None, ""):
+                environ = dict(COMPLETE, PREFLIGHT_CMD="true")
+                if empty is None:
+                    del environ[key]
+                else:
+                    environ[key] = empty
+                with (
+                    self.subTest(key=key, empty=empty),
+                    self.assertRaises(deploy_config.ConfigError),
+                ):
+                    deploy_config.resolve(
+                        deploy_config.Invocation("staging", "abcdef0"), environ
+                    )
+
+    def test_empty_postflight_skips_the_optional_hook(self) -> None:
+        self.assertIsNone(staging(POSTFLIGHT_CMD="  ").postflight_cmd)
 
     def test_an_expected_serving_build_is_a_full_sha(self) -> None:
         # The bind requires the serving version's commit to equal this exactly,
@@ -248,93 +244,6 @@ class StartupRefusals(unittest.TestCase):
                 self.assertRaises(deploy_config.ConfigError),
             ):
                 staging(DEPLOY_EXPECTED_RUNTIME=value)
-
-
-# What the relocation body adds to COMPLETE.
-RELOCATING = {
-    "DEPLOY_PIPELINE_MODE": "relocation",
-    "DEPLOY_RELOCATION_SOURCE_DB_STAGING": "example-db-source",
-    "RELOCATE_COPY_CMD": "scripts/copy.sh --exact",
-}
-
-
-class RelocationRefusals(unittest.TestCase):
-    """The relocation body's config is refused at startup for the migrate hook's
-    reason: its copy hook is reached only once the source is fenced, so a run
-    that finds it missing there has paused writes for nothing."""
-
-    def test_a_complete_relocation_resolves(self) -> None:
-        config = staging(**RELOCATING)
-        self.assertEqual(config.mode, deploy_config.RELOCATION)
-        self.assertEqual(config.db_name, "example-db-staging")
-        self.assertEqual(config.relocation_source_db, "example-db-source")
-        self.assertEqual(config.relocate_copy_cmd, ("scripts/copy.sh", "--exact"))
-
-    def test_each_missing_piece_refuses(self) -> None:
-        for missing in ("DEPLOY_RELOCATION_SOURCE_DB_STAGING", "RELOCATE_COPY_CMD"):
-            with self.subTest(missing=missing):
-                environ = {k: v for k, v in RELOCATING.items() if k != missing}
-                with self.assertRaisesRegex(deploy_config.ConfigError, missing):
-                    staging(**environ)
-
-    def test_a_source_that_is_the_target_refuses(self) -> None:
-        # Fenced as the source and then opened as the target, by a run that
-        # copied nothing: a relocation that reports success and moved nothing.
-        with self.assertRaisesRegex(deploy_config.ConfigError, "not its target"):
-            staging(
-                **{
-                    **RELOCATING,
-                    "DEPLOY_RELOCATION_SOURCE_DB_STAGING": "example-db-staging",
-                }
-            )
-
-    def test_a_resume_is_the_literal_true_and_only_on_this_body(self) -> None:
-        # It lets a run continue from a source somebody else locked, so nothing
-        # but the documented value opts in, and an ordinary deploy never can.
-        self.assertTrue(
-            staging(**RELOCATING, DEPLOY_RELOCATION_RESUME="true").relocation_resume
-        )
-        for value in ("TRUE", "1", "yes", ""):
-            with self.subTest(value=value):
-                self.assertFalse(
-                    staging(
-                        **RELOCATING, DEPLOY_RELOCATION_RESUME=value
-                    ).relocation_resume
-                )
-        self.assertFalse(staging(DEPLOY_RELOCATION_RESUME="true").relocation_resume)
-
-    def test_the_pause_budget_has_a_default_and_refuses_what_it_cannot_honor(
-        self,
-    ) -> None:
-        self.assertEqual(
-            staging(**RELOCATING).relocation_max_pause_seconds,
-            deploy_config.DEFAULT_RELOCATION_MAX_PAUSE_SECONDS,
-        )
-        self.assertEqual(
-            staging(
-                **RELOCATING, DEPLOY_RELOCATION_MAX_PAUSE_SECONDS="90"
-            ).relocation_max_pause_seconds,
-            90,
-        )
-        # Zero would stop every fenced step the instant the fence closed: a
-        # relocation that pauses writes and can never do anything else.
-        for value in ("0", "-5", "soon"):
-            with (
-                self.subTest(value=value),
-                self.assertRaisesRegex(
-                    deploy_config.ConfigError, "DEPLOY_RELOCATION_MAX_PAUSE_SECONDS"
-                ),
-            ):
-                staging(**RELOCATING, DEPLOY_RELOCATION_MAX_PAUSE_SECONDS=value)
-
-    def test_the_other_bodies_take_no_relocation_config(self) -> None:
-        # A source named for some later relocation must not change what an
-        # ordinary deploy of the same checkout resolves to.
-        config = staging(DEPLOY_RELOCATION_SOURCE_DB_STAGING="example-db-source")
-        self.assertEqual(config.mode, deploy_config.WINDOWED)
-        self.assertEqual(config.relocation_source_db, "")
-        self.assertIsNone(config.relocate_copy_cmd)
-        self.assertEqual(config.relocation_max_pause_seconds, 0)
 
 
 if __name__ == "__main__":

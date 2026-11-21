@@ -50,7 +50,7 @@ sanitize_input() {
   input="$sun wrangler 4.79.0 (update available 4.81.0)
 $rule
 --dry-run: exiting now."
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrangler 0.0.0"* ]]
   [[ "$output" != *"4.79.0"* ]]
@@ -77,7 +77,7 @@ $rule
 @test "total upload size normalized" {
   input='Total Upload: 111.75 KiB / gzip: 24.10 KiB
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"Total Upload: 0.00 KiB / gzip: 0.00 KiB"* ]]
   [[ "$output" != *"111.75"* ]]
@@ -99,7 +99,7 @@ $rule
 @test "scrub-binding single name redacts value" {
   input='env.EXAMPLE_BINDING_NAME ("FAKE_TEST_BINDING_VALUE_DO_NOT_USE")
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint --scrub-binding EXAMPLE_BINDING_NAME
+  run sanitize_input "$input" upload-final --scrub-binding EXAMPLE_BINDING_NAME
   [ "$status" -eq 0 ]
   [[ "$output" == *'env.EXAMPLE_BINDING_NAME ("REDACTED")'* ]]
   [[ "$output" != *"FAKE_TEST_BINDING_VALUE_DO_NOT_USE"* ]]
@@ -114,7 +114,7 @@ $rule
 @test "scrub-binding redacts the unquoted form wrangler prints now" {
   input='env.EXAMPLE_BINDING_NAME (FAKE_TEST_BINDING_VALUE_DO_NOT_USE)      Environment Variable
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint --scrub-binding EXAMPLE_BINDING_NAME
+  run sanitize_input "$input" upload-final --scrub-binding EXAMPLE_BINDING_NAME
   [ "$status" -eq 0 ]
   [[ "$output" == *'env.EXAMPLE_BINDING_NAME (REDACTED)'* ]]
   [[ "$output" != *"FAKE_TEST_BINDING_VALUE_DO_NOT_USE"* ]]
@@ -127,7 +127,7 @@ $rule
   input='env.EXAMPLE_BINDING_NAME (FAKE_PREFIX)FAKE_TAIL_DO_NOT_USE)      Environment Variable
 env.OTHER_BINDING ("FAKE_PREFIX\"FAKE_QUOTED_TAIL_DO_NOT_USE")
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint --scrub-binding EXAMPLE_BINDING_NAME --scrub-binding OTHER_BINDING
+  run sanitize_input "$input" upload-final --scrub-binding EXAMPLE_BINDING_NAME --scrub-binding OTHER_BINDING
   [ "$status" -eq 0 ]
   [[ "$output" == *'env.EXAMPLE_BINDING_NAME (REDACTED)'* ]]
   [[ "$output" == *'env.OTHER_BINDING ("REDACTED")'* ]]
@@ -139,7 +139,7 @@ env.OTHER_BINDING ("FAKE_PREFIX\"FAKE_QUOTED_TAIL_DO_NOT_USE")
   esc=$(printf '\033')
   input="${esc}[37menv.EXAMPLE_BINDING_NAME${esc}[39m (${esc}[2mFAKE_TEST_BINDING_VALUE_DO_NOT_USE${esc}[22m)
 --dry-run: exiting now."
-  run sanitize_input "$input" upload-maint --scrub-binding EXAMPLE_BINDING_NAME
+  run sanitize_input "$input" upload-final --scrub-binding EXAMPLE_BINDING_NAME
   [ "$status" -eq 0 ]
   [[ "$output" == *'env.EXAMPLE_BINDING_NAME (REDACTED)'* ]]
   [[ "$output" != *"FAKE_TEST_BINDING_VALUE_DO_NOT_USE"* ]]
@@ -153,7 +153,7 @@ env.OTHER_BINDING ("FAKE_PREFIX\"FAKE_QUOTED_TAIL_DO_NOT_USE")
 @test "binding preserved when no scrub flag" {
   input='env.SOME_UNSCRUBBED ("public-config-value")
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *'env.SOME_UNSCRUBBED ("public-config-value")'* ]]
 }
@@ -166,7 +166,7 @@ env.OTHER_BINDING ("FAKE_PREFIX\"FAKE_QUOTED_TAIL_DO_NOT_USE")
 env.BAR ("secret2")
 env.UNSCRUBBED ("public")
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint --scrub-binding FOO --scrub-binding BAR
+  run sanitize_input "$input" upload-final --scrub-binding FOO --scrub-binding BAR
   [ "$status" -eq 0 ]
   [[ "$output" == *'env.FOO ("REDACTED")'* ]]
   [[ "$output" == *'env.BAR ("REDACTED")'* ]]
@@ -199,7 +199,7 @@ env.UNSCRUBBED ("public")
 @test "iso timestamp normalized" {
   input='Created: 2026-04-08T21:35:56.173855Z
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"Created: 2026-04-08T00:00:00.000000Z"* ]]
   [[ "$output" != *"21:35:56"* ]]
@@ -215,7 +215,7 @@ env.UNSCRUBBED ("public")
 @test "email address scrubbed" {
   input='Author: nobody@example.invalid
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"test@example.com"* ]]
   [[ "$output" != *"nobody"* ]]
@@ -228,7 +228,7 @@ env.UNSCRUBBED ("public")
 @test "stray uuid scrubbed" {
   input='binding-id: deadbeef-cafe-1234-5678-9abcdef01234
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"00000000-0000-0000-0000-000000000000"* ]]
   [[ "$output" != *"deadbeef-cafe-1234-5678-9abcdef01234"* ]]
@@ -240,7 +240,7 @@ env.UNSCRUBBED ("public")
 @test "account id scrubbed" {
   input='account: 1234567890abcdef1234567890abcdef
 --dry-run: exiting now.'
-  run sanitize_input "$input" upload-maint
+  run sanitize_input "$input" upload-final
   [ "$status" -eq 0 ]
   [[ "$output" == *"00000000000000000000000000000000"* ]]
   [[ "$output" != *"1234567890abcdef1234567890abcdef"* ]]
@@ -249,13 +249,6 @@ env.UNSCRUBBED ("public")
 # ----------------------------------------------------------------------
 # Worker Version ID injection per slot.
 # ----------------------------------------------------------------------
-@test "upload-maint injects 11111111 slot" {
-  run sanitize_input '--dry-run: exiting now.' upload-maint
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Worker Version ID: 11111111-1111-1111-1111-111111111111"* ]]
-  [[ "$output" != *"--dry-run: exiting now."* ]]
-}
-
 @test "upload-final injects 22222222 slot" {
   run sanitize_input '--dry-run: exiting now.' upload-final
   [ "$status" -eq 0 ]
@@ -293,6 +286,6 @@ env.UNSCRUBBED ("public")
 # --scrub-binding with no value rejected.
 # ----------------------------------------------------------------------
 @test "--scrub-binding requires arg" {
-  run sanitize_input "anything" upload-maint --scrub-binding
+  run sanitize_input "anything" upload-final --scrub-binding
   [ "$status" -ne 0 ]
 }

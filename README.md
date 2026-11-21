@@ -1,23 +1,17 @@
 # cloudflare-deploy-toolkit
 
-Safely deploy stateful Cloudflare Workers - gradual-deployments split,
-lock/drain/bookmark, and concentric failure recovery - without writing 600 lines
-of POSIX `sh` yourself.
+Deploy compatible updates to a stateful Cloudflare Worker while it serves
+traffic. The pipeline checks the serving version before applying a migration
+and again before promoting the new build.
 
 ## What it is
 
-A deploy pipeline, a set of deploy gates, a test harness, Worker code patterns
-and GitHub Actions examples for any wrangler-based Worker with state (D1, KV,
-Durable Objects) that needs to keep working after a deploy fails mid-flight:
-
-1. **A deploy pipeline** (`deploy-lib/`) that runs the gradual-deployments split
-   (`versions upload` -> `triggers deploy` -> `versions deploy <id>@100%`), the
-   lock/drain/bookmark sequence, verified `_deploy_lock` read-back before and
-   after lock mutations, a focused diagnostics bundle for failure artifacts, and
-   the concentric recovery path. A consumer reaches it through
-   `safe_deploy_pipeline.py`, run by a wrapper that exports config and hook
-   commands. The wrapper is boilerplate - ~30 lines plus a few per hook, before
-   whatever routing or authorization policy a consumer layers on top.
+1. **A windowless deploy pipeline** captures the single serving
+   version, runs your preflight against it, updates triggers, applies your compatible migration, uploads
+   the final version and checks its runtime when configured. It promotes the
+   version and runs your postflight. An ambiguous promotion failure triggers
+   Worker rollback to the captured version. Migration and postflight failures
+   require investigation and a forward fix.
 2. **A shared deployment-verification helper** (`bin/verify_deployment.py`) that
    checks the latest Cloudflare deployment timestamp with one Linux/macOS-stable
    RFC3339 parser and the same bounded future-skew / max-age rules used by the
@@ -35,49 +29,15 @@ Durable Objects) that needs to keep working after a deploy fails mid-flight:
    and a Python suite per `bin/` gate driving its real executable - the shapes
    split by what they drive, since a gate's subject is a git repo or an API
    response rather than a wrangler fixture flow.
-4. **Worker code patterns** for the in-Worker side of safe deploys: the
-   maintenance-mode gate, the deploy-lock table, and the `assertNotLocked()`
-   helper called once at the router (see `worker-patterns/README.md` for the
-   bounded-in-flight drain gate rationale).
-5. **Workflow examples** - copy-pasteable GitHub Actions YAML for the deploy +
-   verify pipeline and the manual unlock workflow.
+4. **A workflow example** wires a deployment and its verification into GitHub
+   Actions. The provenance and CI-execution gates can also run independently.
 
 ## Why it exists
 
-`wrangler deploy` is one CLI command but covers script upload, version
-promotion, and schedules update under the hood:
-
-1. script upload
-2. version promotion
-3. schedules update
-
-If any step after the first fails, the worker is already promoted live with
-whatever bindings the upload step had - including any transient
-`MAINTENANCE_MODE=true` env var meant to be torn down a few seconds later. The
-standard `wrangler deploy` failure handling does not unwind the partial
-promotion.
-
-Without recovery layers that distinguish "promoted but not yet locked" from
-"promoted and locked," the standard cleanup path leaves the worker live with
-those transient bindings.
-
-The fix is the gradual-deployments split (`wrangler versions upload` ->
-`wrangler triggers deploy` -> `wrangler versions deploy <id>@100%`) plus a
-concentric recovery path that handles the cron-limit-error / DB-lock-failure /
-migration-failure scenarios with worker rollback + D1 Time Travel restore. Lock
-and unlock cleanup use `_deploy_lock` read-back as the source of truth, so a
-wrangler timeout or 429 cannot be misread as "the mutation definitely did not
-happen." As soon as a second stateful Worker showed up on the roadmap,
-copy-pasting 600+ lines of POSIX `sh` into a new project was clearly the wrong
-call - hence the toolkit.
-
-The deploy pipeline is genuinely complex (mutable run state, an exit path,
-recovery layers), so testing it well is the difference between "this incident
-never happens again" and "we hope it never happens again." The toolkit's main
-job is to make that test cheap.
-
-A search for prior art across npm, the GitHub Actions marketplace, and
-Cloudflare's own docs found nothing equivalent.
+A trigger update can fail after a plain Wrangler deploy has already changed
+the live version. Separating trigger sync, schema migration, upload and
+promotion lets the pipeline handle each failure according to what might have
+changed. Consumer migrations must work with the old Worker still serving.
 
 ## How to use it
 
@@ -96,7 +56,7 @@ Cloudflare's own docs found nothing equivalent.
 ### Install
 
 The toolkit is a deploy pipeline under `deploy-lib/`, a set of Python gates
-under `bin/`, and a handful of code patterns and YAML examples. There is no
+under `bin/`, and a GitHub Actions example. There is no
 compile or install step - your deploy script runs the pipeline entry point, and
 the gates are invoked as commands. What each gate needs on PATH beyond a Python
 3.14 interpreter is what it spawns: `git` for the provenance gate, `curl` and `jq`
@@ -106,12 +66,13 @@ Options for getting the toolkit into your repo:
 
 #### 1. Git submodule (recommended)
 
-Pin to a tag for reproducibility:
+A submodule records the exact commit in the consuming repository. Review that
+commit and its matching pipeline guide before committing the submodule:
 
 ```sh
 git submodule add https://github.com/curlewlabs-com/cloudflare-deploy-toolkit \
   vendor/cloudflare-deploy-toolkit
-git -C vendor/cloudflare-deploy-toolkit checkout v0.1.0   # or whatever tag
+git -C vendor/cloudflare-deploy-toolkit rev-parse HEAD
 git submodule update --init --recursive
 ```
 
@@ -131,8 +92,7 @@ roster; `DEPLOY_TOOLKIT_DIR` is how that lib finds the roster.
 
 Copy the whole of `deploy-lib/` for the deploy wrapper - the pipeline refuses to
 load without the modules beside it, which it imports by bare name - plus
-`bin/verify_deployment.py` if you want the shared post-deploy verify step, and
-any patterns you need from `worker-patterns/` directly into your repo. If you
+`bin/verify_deployment.py` if you want the shared post-deploy verify step, and the other gates your workflow uses. If you
 also copy the workflow examples, keep the helper path layout consistent or
 update the YAML to match your vendored location. You'll need to track upstream
 manually for fixes.
@@ -145,7 +105,7 @@ beside it. Releases are immutable, so the archive's digest never changes once
 published; pin the URL and the digest, and verify before extracting:
 
 ```sh
-TAG=v0.1.0
+TAG=${TOOLKIT_TAG:?Set TOOLKIT_TAG to a published release tag}
 URL=https://github.com/curlewlabs-com/cloudflare-deploy-toolkit/releases/download/$TAG/cloudflare-deploy-toolkit-$TAG.tar.gz
 curl -fsSLo toolkit.tar.gz "$URL"
 echo "<sha256 from SHA256SUMS>  toolkit.tar.gz" | shasum -a 256 -c -
@@ -157,18 +117,19 @@ tar -xzf toolkit.tar.gz -C vendor
 For automated tooling that wants the latest pipeline and verify helper:
 
 ```sh
-BASE=https://raw.githubusercontent.com/curlewlabs-com/cloudflare-deploy-toolkit/v0.1.0
+REF=${TOOLKIT_REF:?Set TOOLKIT_REF to the commit containing these instructions}
+BASE=https://raw.githubusercontent.com/curlewlabs-com/cloudflare-deploy-toolkit/$REF
 DEST=vendor/cloudflare-deploy-toolkit
 mkdir -p "$DEST/deploy-lib" "$DEST/bin"
 for f in deploy-lib/wrangler-retry.sh \
     deploy-lib/safe_deploy_pipeline.py deploy-lib/deploy_config.py \
     deploy-lib/deploy_state.py deploy-lib/deploy_reporting.py \
-    deploy-lib/deploy_versions.py deploy-lib/deploy_database.py \
-    deploy-lib/deploy_recovery.py deploy-lib/deploy_relocation.py \
+    deploy-lib/deploy_versions.py \
+    deploy-lib/deploy_recovery.py \
     deploy-lib/deploy_diagnostics.py \
-    deploy-lib/deploy_lock.py deploy-lib/wrangler_runner.py \
+    deploy-lib/wrangler_runner.py \
     deploy-lib/wrangler_transient.py deploy-lib/deployments_list.py \
-    deploy-lib/lock_state.py deploy-lib/diagnostics_path.py \
+    deploy-lib/diagnostics_path.py \
     deploy-lib/retry_sleep.py deploy-lib/version_message.py \
     deploy-lib/version_runtime.py bin/verify_deployment.py; do
   curl -fsSL "$BASE/$f" > "$DEST/$f"
@@ -185,8 +146,8 @@ to load without the files it needs. The fetch list above is the roster; this
 paragraph does not repeat it. A flat copy, or a roster short one file, fails at
 startup rather than mid-deploy.
 
-Once installed, write a wrapper: it exports the database and
-wrangler-environment config variables plus its hook commands and runs
+Once installed, write a wrapper: it exports the
+Wrangler environment config variables plus its hook commands and runs
 `safe_deploy_pipeline.py`. See [`deploy-lib/README.md`](deploy-lib/README.md)
 for the full API.
 
@@ -219,15 +180,9 @@ cloudflare-deploy-toolkit/
 |       +-- example-hook.sh                    the hook command the example wrapper points at
 |       +-- example-fixtures/                  generic mock-wrangler fixtures for the end-to-end suites
 |       +-- check.sh                           runs bats, the Python suites, and the vendored-path smoke from CI
-+-- worker-patterns/              TS code patterns for Worker code
-|   +-- README.md                 when and how to use each pattern
-|   +-- maintenance-gate.ts       request-time MAINTENANCE_MODE check (returns 503)
-|   +-- deploy-lock.ts            assertNotLocked() helper, called once at the router
-|   +-- deploy-lock.sql           _deploy_lock table DDL
 +-- workflow-examples/            sample GitHub Actions YAML
     +-- README.md                 how to adapt the examples for a new Worker
     +-- deploy.yml                generalized deploy workflow with safe pipeline
-    +-- unlock-db.yml             generalized manual unlock workflow
 ```
 
 ## Onboarding a new Worker
@@ -238,9 +193,6 @@ Read the per-area READMEs in this order:
   [`deploy-lib/README.md`](deploy-lib/README.md). You'll write a wrapper that
   supplies config and the hooks and hands off to the pipeline entry point - the
   pipeline does the rest.
-- **For your Worker code:**
-  [`worker-patterns/README.md`](worker-patterns/README.md). The patterns are
-  copy-paste-and-adapt - they assume D1 + a `_deploy_lock` table.
 - **For testing your deploy script:**
   [`test-harness/README.md`](test-harness/README.md). You'll write a small
   `.bats` test driver that points at `bin/mock-wrangler.sh`, plus a capture
@@ -252,7 +204,7 @@ Read the per-area READMEs in this order:
 
 ## Constraint: introducing a new Durable Object class
 
-`wrangler versions upload` (used by the maintenance and final phases of the
+`wrangler versions upload` (used by the
 safe-deploy pipeline) cannot apply _new_ Durable Object migrations. Per
 Cloudflare's docs:
 
@@ -319,14 +271,13 @@ only over-reject already-applied tags.
   goes through the pipeline. The same holds for a new Durable Object class, as
   [the constraint above](#constraint-introducing-a-new-durable-object-class)
   describes.
-- **A relocation's pause budget bounds its hooks, not the pipeline's own
-  wrangler calls.** `DEPLOY_RELOCATION_MAX_PAUSE_SECONDS` stops a copy or
-  migrate hook that runs past it, and is checked between steps. A wrangler
-  call the pipeline makes inside the pause (a lock write or read-back, the
-  serving-version check) is not cut off, because a lock write cut off on the
-  client can still land on Cloudflare after recovery has read the lock, leaving
-  a lock nobody owns. Such a call ends when wrangler gives up, which stretches
-  the pause; the locks stay set throughout, so no write is lost.
+- Database cutovers require a separate recovery procedure. The consumer
+  preflight must verify the candidate binding and the migration hook target
+  both resolve to the database bound to the captured Worker version.
+- Use expand/contract migrations that keep the serving and rollback versions
+  compatible. Even a code-only change can write data before rollback. Verify
+  both versions can consume each other's writes throughout recovery. The
+  toolkit never rewinds a live database.
 
 ## Versioning
 
@@ -345,24 +296,16 @@ release is cut is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 It runs the Bats suites, the Python suites, and the same run again from a
 vendored copy of the tree.
 
-CI also type-checks the Python with mypy (strict) and the TypeScript patterns
-with `tsc`, at the versions `requirements-dev.txt` and `package-lock.json` pin.
-From a Python 3.14 virtual environment:
+CI type-checks Python with mypy in strict mode. In a Python 3.14 environment:
 
 ```sh
 pip install -r requirements-dev.txt
 mypy
-npm ci --ignore-scripts
-npm run typecheck
 ```
 
 Linting and formatting (shellcheck, shfmt, ruff, prettier) run in CI's
 `baseline` job, from
 [ci-baseline](https://github.com/curlewlabs-com/ci-baseline).
-
-eslint runs in CI through ci-baseline. To run the same check locally, after
-installing dependencies: `<a ci-baseline checkout>/lib/lint-local.sh`. It runs
-the ci-baseline commit this repository's workflows pin.
 
 After a bump of CI's bats version, `python3 tools/refresh_test_tools.py`
 rewrites the digest CI checks that archive against.
