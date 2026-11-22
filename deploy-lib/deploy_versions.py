@@ -146,9 +146,8 @@ class WorkerVersions:
         except deployments_list.Refused as refusal:
             emit_error(f"[FAIL] single-version check failed: {refusal}")
             emit_error(
-                f"[FAIL] Serving set changed mid-deploy ({context}): no longer a "
-                "single version at 100%. Aborting - find what moved it before "
-                "re-dispatching."
+                f"[FAIL] Cannot confirm a single serving version at 100% {context}. "
+                "Read the deployment history and traffic split before retrying."
             )
             raise DeployAbort(1) from refusal
 

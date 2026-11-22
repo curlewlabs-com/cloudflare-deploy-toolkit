@@ -29,11 +29,23 @@ setup() {
   fi
 }
 
-@test "rejected split promotion is logged and leaves serving state alone" {
+@test "unexpected promotion arguments are recorded and cannot move traffic" {
   export FIXTURE_DIR="$BATS_TEST_TMPDIR" MOCK_LOG_FILE="$BATS_TEST_TMPDIR/calls.log"
-  run "$HARNESS_DIR/bin/mock-wrangler.sh" versions deploy \
-    22222222-2222-2222-2222-222222222222@100% 99999999-9999-9999-9999-999999999999@50%
+  final=22222222-2222-2222-2222-222222222222
+  previous=99999999-9999-9999-9999-999999999999
+  for extra in "$previous@50%" "$previous" "--dry-run"; do
+    run "$HARNESS_DIR/bin/mock-wrangler.sh" versions deploy "$final@100%" \
+      --env staging --yes --message "a deployment" "$extra"
+    [ "$status" -ne 0 ]
+    grep -Fq "promote_final versions deploy $final@100% --env staging --yes --message a deployment $extra" "$MOCK_LOG_FILE"
+    [ ! -e "$MOCK_LOG_FILE.promoted" ]
+  done
+}
+
+@test "human-readable deployment history cannot satisfy a machine read" {
+  export FIXTURE_DIR="$BATS_TEST_TMPDIR" MOCK_LOG_FILE="$BATS_TEST_TMPDIR/calls.log"
+  printf '[]\n' > "$FIXTURE_DIR/deployments_list.json"
+  run "$HARNESS_DIR/bin/mock-wrangler.sh" deployments list --env staging
   [ "$status" -ne 0 ]
-  grep -q '^promote_final versions deploy ' "$MOCK_LOG_FILE"
-  [ ! -e "$MOCK_LOG_FILE.promoted" ]
+  [[ "$output" == *"requires --json"* ]]
 }

@@ -18,8 +18,6 @@
 #             extracts the right element (regression guard for .[0] vs .[-1]).
 #   OLDER   - `.[0]` of the latest/prior slice. Forces the test fixture to have
 #             distinct prior and latest entries so .[-1] vs .[0] is meaningful.
-#             Match-substring '11111111' tells the mock this is the maint
-#             version (not the final), so it can return the right fixture.
 #   FINAL   - version ID returned by the final upload step. '22222222'.
 #
 # If you change a slot, search the repo for the literal value first - the mock,
