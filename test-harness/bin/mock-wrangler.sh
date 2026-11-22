@@ -126,7 +126,10 @@ case "$STEP" in
 deployments_list)
     json=false
     for argument in "$@"; do
-        if [ "$argument" = "--json" ]; then json=true; break; fi
+        if [ "$argument" = "--json" ]; then
+            json=true
+            break
+        fi
     done
     if [ "$json" = false ]; then
         echo "mock-wrangler: deployments list requires --json" >&2
