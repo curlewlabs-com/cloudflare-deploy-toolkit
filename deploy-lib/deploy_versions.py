@@ -30,10 +30,11 @@ from deploy_state import DeployAbort
 # promoting something unexamined.
 VERSION_ID_LINE = re.compile(r"Worker Version ID: ([0-9a-f-]+)")
 
-SPLIT_SERVING_REFUSAL = (
-    "[FAIL] The serving set is not a single version at 100%. Resolve the split "
-    "deliberately (complete or roll back the gradual rollout so one version "
-    "serves 100%), then re-dispatch."
+SERVING_REFUSAL = (
+    "[FAIL] Verify the deployment history before retrying. Only provision a Worker "
+    "separately after confirming it has never been deployed. For a confirmed "
+    "traffic split, complete or roll back the gradual "
+    "rollout so one version serves 100%."
 )
 
 
@@ -145,9 +146,8 @@ class WorkerVersions:
         except deployments_list.Refused as refusal:
             emit_error(f"[FAIL] single-version check failed: {refusal}")
             emit_error(
-                f"[FAIL] Serving set changed mid-deploy ({context}): no longer a "
-                "single version at 100%. Aborting - find what moved it before "
-                "re-dispatching."
+                f"[FAIL] Cannot confirm a single serving version at 100% {context}. "
+                "Read the deployment history and traffic split before retrying."
             )
             raise DeployAbort(1) from refusal
 
@@ -316,7 +316,7 @@ class WorkerVersions:
             version_id = deployments_list.single_serving_version_id(document)
         except deployments_list.Refused as refusal:
             emit_error(f"[FAIL] single-version check failed: {refusal}")
-            emit_error(SPLIT_SERVING_REFUSAL)
+            emit_error(SERVING_REFUSAL)
             raise DeployAbort(1) from refusal
         # Recovery must be able to pass the captured ID back to Wrangler.
         if not wrangler_runner.reaches_wrangler(version_id):

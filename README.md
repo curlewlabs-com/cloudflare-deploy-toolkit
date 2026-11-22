@@ -80,7 +80,7 @@ Then in your wrapper script:
 
 ```sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEPLOY_TOOLKIT_DIR="$SCRIPT_DIR/../vendor/cloudflare-deploy-toolkit"
+export DEPLOY_TOOLKIT_DIR="$SCRIPT_DIR/../vendor/cloudflare-deploy-toolkit"
 exec python3.14 "$DEPLOY_TOOLKIT_DIR/deploy-lib/safe_deploy_pipeline.py" "$@"
 ```
 

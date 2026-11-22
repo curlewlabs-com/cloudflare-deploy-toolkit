@@ -87,6 +87,13 @@ refute_step_called() {
   fi
 }
 
+# A direct D1 command is logged even when the mock has no named step for it.
+refute_database_command() {
+  if grep -E ' d1 (execute|time-travel)' "$CALLS_LOG"; then
+    return 1
+  fi
+}
+
 @test "windowless_happy_path: no window taken, triggers before upload, migrate before promote" {
   run_wrapper
   [ "$status" -eq 0 ]
@@ -98,7 +105,8 @@ refute_step_called() {
   assert_step_called promote_final
   # Check the raw commands: a maintenance upload would classify as upload_final,
   # and a direct database command would otherwise appear as an unknown step.
-  if grep -E 'MAINTENANCE_MODE| d1 (execute|time-travel)|11111111-1111-1111-1111-111111111111@' "$CALLS_LOG"; then
+  refute_database_command
+  if grep -E 'MAINTENANCE_MODE|11111111-1111-1111-1111-111111111111@' "$CALLS_LOG"; then
     return 1
   fi
   refute_step_called wrangler_rollback
@@ -120,6 +128,7 @@ refute_step_called() {
   refute_step_called upload_final
   refute_step_called promote_final
   refute_step_called wrangler_rollback
+  refute_database_command
 }
 
 @test "windowless_migrate_fail: aborts fix-forward - no restore, no rollback, nothing promoted" {
@@ -131,6 +140,7 @@ refute_step_called() {
   refute_step_called upload_final
   refute_step_called promote_final
   refute_step_called wrangler_rollback
+  refute_database_command
 }
 
 @test "windowless_promote_final_fail: rolls the worker back even though no maint version was promoted" {
@@ -140,6 +150,7 @@ refute_step_called() {
   assert_step_called promote_final
   # A lost response can leave the new version live. Recover to the captured target.
   assert_step_called wrangler_rollback
+  refute_database_command
 }
 
 @test "windowless_unusable_version_id: the windowless capture refuses it too" {
@@ -263,6 +274,20 @@ run_wrapper_expecting() {
   # The promote succeeded, so the attempted flag was cleared: a later failure
   # must not roll back a promote that landed - forward-fix only.
   refute_step_called wrangler_rollback
+  refute_database_command
+}
+
+@test "unreadable history stops before mutation and requires verification" {
+  fixtures="$BATS_TEST_TMPDIR/broken-history"
+  cp -R "$FIXTURE_DIR" "$fixtures"
+  printf '%s\n' 'not a deployment history' > "$fixtures/deployments_list.json"
+  export FIXTURE_DIR="$fixtures"
+  run_wrapper
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not valid JSON"* ]]
+  [[ "$output" == *"after confirming it has never been deployed"* ]]
+  refute_step_called triggers
+  refute_step_called promote_final
 }
 
 @test "windowless_split_serving_refuses: a gradual split aborts before any mutation" {
@@ -286,7 +311,7 @@ EOF
   export FIXTURE_DIR="$split_fixtures"
   run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not a single version at 100%"* ]]
+  [[ "$output" == *"expected exactly one version in the newest deployment, found 2"* ]]
   assert_step_called deployments_list
   refute_step_called triggers
   refute_step_called upload_final

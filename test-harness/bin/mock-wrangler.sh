@@ -93,24 +93,24 @@ if [ ! -d "$FIXTURE_DIR" ]; then
 fi
 
 PROMOTED_FILE="$MOCK_LOG_FILE.promoted"
-# A promotion is recognized only when it spends the uploaded fixture's ID.
-case "$*" in
-*"deployments list"*"--json"*)
+# The log distinguishes attempts from the fixture validation below.
+case "${1:-} ${2:-}" in
+"deployments list")
     STEP=deployments_list
     ;;
-*"versions view"*)
+"versions view")
     STEP=versions_view
     ;;
-*"versions upload"*)
+"versions upload")
     STEP=upload_final
     ;;
-*"triggers deploy"*)
+"triggers deploy")
     STEP=triggers
     ;;
-*"versions deploy"*"22222222"*)
+"versions deploy")
     STEP=promote_final
     ;;
-*"rollback"*)
+"rollback "*)
     STEP=wrangler_rollback
     ;;
 *)
@@ -119,6 +119,34 @@ case "$*" in
 esac
 
 echo "$STEP $*" >>"$MOCK_LOG_FILE"
+
+# Every promotion attempt must appear in no-promotion assertions, including
+# a malformed request. Only the exact uploaded version can advance serving state.
+case "$STEP" in
+deployments_list)
+    json=false
+    for argument in "$@"; do
+        if [ "$argument" = "--json" ]; then
+            json=true
+            break
+        fi
+    done
+    if [ "$json" = false ]; then
+        echo "mock-wrangler: deployments list requires --json" >&2
+        exit 73
+    fi
+    ;;
+promote_final)
+    # The consumer pipeline sends one target, environment and message. Extra
+    # positionals or flags could change traffic or turn the call into a dry run.
+    if [ "$#" -ne 8 ] || [ "$3" != "22222222-2222-2222-2222-222222222222@100%" ] ||
+        [ "$4" != "--env" ] || [ -z "$5" ] || [ "$6" != "--yes" ] ||
+        [ "$7" != "--message" ] || [ -z "$8" ]; then
+        echo "mock-wrangler: unexpected promotion arguments" >&2
+        exit 73
+    fi
+    ;;
+esac
 
 # Inject failure if requested. Exit 73 is arbitrary but distinct from any real
 # wrangler exit code we care about, making mock-injected failures easy to spot
@@ -280,7 +308,7 @@ case "$STEP" in
 promote_final)
     # The serving set follows a promote, so a read made after one sees what was
     # promoted rather than the fixture's fixed answer.
-    printf '%s' "$*" | grep -Eo '[0-9a-f-]{36}@100%' | head -n 1 | cut -d@ -f1 >"$PROMOTED_FILE"
+    printf '%s\n' "${3%@100%}" >"$PROMOTED_FILE"
     ;;
 esac
 
