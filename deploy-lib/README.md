@@ -4,21 +4,15 @@ Run the pipeline for an existing Worker with a single version serving all
 traffic. A fresh Worker needs its first deployment separately. See the
 [toolkit limits](../README.md#limits).
 
-## Upgrading and serialization
+## Serialization and preflight
 
 Serialize deployments for each environment from preflight through failure
 recovery. Operate dashboard traffic changes and manual migrations inside that
 same exclusion. The version checks detect a changed serving version but cannot
 make a check and the next remote mutation atomic.
 
-Before upgrading a lock-aware wrapper, reconcile any outstanding maintenance
-deployment or database relocation using its original release. Confirm which
-Worker serves traffic and which database accepts writes. The new wrapper must
-select `DEPLOY_PIPELINE_MODE=windowless-v1` and provide `WINDOWLESS_PREFLIGHT_CMD`.
-Have that command refuse an unreadable or held database fence while any old
-deployment can still set it. Once all old writers have retired and the final
-fence is verified clear, the hook checks the live schema and compatibility of
-the migration. Verify every committed intermediate state can serve every Worker
+The preflight hook, `PREFLIGHT_CMD`, checks the live schema and compatibility
+of the migration. Verify every committed intermediate state can serve every Worker
 version still executing. A deployment showing the captured version at full
 traffic does not prove older requests have finished. Defer contract migrations
 until the earlier code has drained across propagation and in-flight work.
@@ -34,7 +28,7 @@ Check trigger compatibility in both directions: serving code can receive new
 routes, schedules or queue events before promotion, and the candidate can
 still receive the previous triggers while changes propagate. Matching schemas on
 different databases do not establish that writes will reach the candidate.
-Older releases reject the new mode, so a mismatched wrapper and pin abort. A preflight failure stops before any mutation.
+A preflight failure stops before any mutation.
 
 ## Deploy order and recovery
 
@@ -84,10 +78,9 @@ export DEPLOY_WRANGLER_ENV_STAGING="staging"
 export DEPLOY_WRANGLER_ENV_PRODUCTION="production"
 
 # Hook commands receive the environment; preflight also receives the version ID.
-export DEPLOY_PIPELINE_MODE=windowless-v1
 # Supply this consumer-owned hook before adopting the pipeline. It verifies
-# live migration compatibility and refuses a held or unreadable legacy fence.
-export WINDOWLESS_PREFLIGHT_CMD="$SCRIPT_DIR/windowless-preflight.sh"
+# live migration compatibility.
+export PREFLIGHT_CMD="$SCRIPT_DIR/preflight.sh"
 # A migrate command is REQUIRED and is checked at startup. Use `true` when
 # routine deploys must preserve remote DB contents.
 export MIGRATE_CMD="true"
@@ -121,7 +114,7 @@ pipeline being a program rather than a library:
 
 Export `DEPLOY_WRANGLER_ENV_STAGING` or `DEPLOY_WRANGLER_ENV_PRODUCTION` for
 the requested environment. `MIGRATE_CMD` is required. Use `true` when the
-deployment has no migration. `WINDOWLESS_PREFLIGHT_CMD` is required and must
+deployment has no migration. `PREFLIGHT_CMD` is required and must
 verify every database state a partial migration can leave is compatible with
 every version that can still execute. Verify two-way write compatibility even
 when the migration command is `true`. `POSTFLIGHT_CMD` is optional.
@@ -129,9 +122,6 @@ Each command is split using shell quoting and receives the target environment
 after any configured arguments. Preflight also receives the immutable serving
 version ID after the environment. Hooks inherit the wrapper's environment. A nonzero exit
 fails the deployment.
-
-Set `DEPLOY_PIPELINE_MODE=windowless-v1` explicitly. A missing, empty or unknown
-mode refuses before any remote call.
 
 ### Optional settings
 
@@ -230,7 +220,7 @@ wrangler. The pattern is to write a `.bats` driver that:
 
 1. Sets `WRANGLER=$HARNESS_DIR/bin/mock-wrangler.sh` (the mock binary that
    classifies wrangler calls and replays committed fixtures).
-2. Sets `WINDOWLESS_PREFLIGHT_CMD=true`, `MIGRATE_CMD=true` and `POSTFLIGHT_CMD=true` so the test doesn't need a
+2. Sets `PREFLIGHT_CMD=true`, `MIGRATE_CMD=true` and `POSTFLIGHT_CMD=true` so the test doesn't need a
    real D1 connection or a real consumer migrate hook. The real wrapper should
    still wire postflight in strict mode (for example
    `check-schema-live.sh "$1" --require-schema`) so an empty DB under a

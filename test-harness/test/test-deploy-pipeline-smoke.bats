@@ -122,7 +122,7 @@ refute_database_command() {
 }
 
 @test "windowless_triggers_fail: aborts before any DB mutation or upload - old code serving, no recovery" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 MOCK_FAIL_AT=triggers
+  run_wrapper MOCK_FAIL_AT=triggers
   [ "$status" -ne 0 ]
   assert_step_called triggers
   refute_step_called upload_final
@@ -133,7 +133,7 @@ refute_database_command() {
 
 @test "windowless_migrate_fail: aborts fix-forward - no restore, no rollback, nothing promoted" {
   export MIGRATE_CMD="false"
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper
   [ "$status" -ne 0 ]
   [[ "$output" == *"NO"*"Time-Travel restore runs on this path"* ]]
   assert_step_called triggers
@@ -144,7 +144,7 @@ refute_database_command() {
 }
 
 @test "windowless_promote_final_fail: rolls the worker back even though no maint version was promoted" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 MOCK_FAIL_AT=promote_final
+  run_wrapper MOCK_FAIL_AT=promote_final
   [ "$status" -ne 0 ]
   assert_step_called upload_final
   assert_step_called promote_final
@@ -163,7 +163,7 @@ refute_database_command() {
   # cannot spend.
   with_unusable_serving_version_id
 
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper
   [ "$status" -ne 0 ]
   assert_step_called deployments_list
   refute_step_called triggers
@@ -192,7 +192,7 @@ run_wrapper_expecting() {
 }
 
 @test "windowless_expected_build_matches: the bind reads the serving version and the deploy proceeds" {
-  run_wrapper_expecting "$EXPECTED_SERVING_SHA" DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper_expecting "$EXPECTED_SERVING_SHA"
   [ "$status" -eq 0 ]
   view_line=$(grep -n "^versions_view " "$CALLS_LOG" | head -n 1 | cut -d: -f1)
   triggers_line=$(grep -n "^triggers " "$CALLS_LOG" | head -n 1 | cut -d: -f1)
@@ -201,7 +201,7 @@ run_wrapper_expecting() {
 }
 
 @test "windowless_expected_build_differs: a different serving build aborts before any mutation" {
-  run_wrapper_expecting def5678000000000000000000000000000000000 DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper_expecting def5678000000000000000000000000000000000
   [ "$status" -ne 0 ]
   [[ "$output" == *"uploaded from $EXPECTED_SERVING_SHA, not the expected def5678"* ]]
   assert_step_called versions_view
@@ -214,7 +214,7 @@ run_wrapper_expecting() {
 @test "windowless_expected_build_not_final: a version no final upload wrote names no commit" {
   # A maintenance version, or one uploaded outside the pipeline, carries no
   # final-upload message, so which commit it serves is unknown.
-  run_wrapper_expecting "$EXPECTED_SERVING_SHA" DEPLOY_PIPELINE_MODE=windowless-v1 \
+  run_wrapper_expecting "$EXPECTED_SERVING_SHA" \
     "MOCK_VERSION_MESSAGE=deploy-pipeline maintenance (abc1234) commit=$EXPECTED_SERVING_SHA"
   [ "$status" -ne 0 ]
   [[ "$output" == *"uploaded from no commit its message names"* ]]
@@ -226,7 +226,7 @@ run_wrapper_expecting() {
   # Distinct commits share short prefixes, so a version naming only the short
   # form - a rolled-back one uploaded before the full commit was written - must
   # not pass for the expected commit it happens to prefix.
-  run_wrapper_expecting "$EXPECTED_SERVING_SHA" DEPLOY_PIPELINE_MODE=windowless-v1 \
+  run_wrapper_expecting "$EXPECTED_SERVING_SHA" \
     "MOCK_VERSION_MESSAGE=deploy-pipeline final (abc1234) gen=1"
   [ "$status" -ne 0 ]
   [[ "$output" == *"uploaded from no commit its message names"* ]]
@@ -243,7 +243,7 @@ run_wrapper_expecting() {
 }
 
 @test "windowless_expected_build_unreadable: a failed view aborts before any mutation" {
-  run_wrapper_expecting "$EXPECTED_SERVING_SHA" DEPLOY_PIPELINE_MODE=windowless-v1 \
+  run_wrapper_expecting "$EXPECTED_SERVING_SHA" \
     MOCK_FAIL_AT=versions_view
   [ "$status" -ne 0 ]
   refute_step_called triggers
@@ -258,7 +258,7 @@ run_wrapper_expecting() {
   cp -R "$FIXTURE_DIR" "$fixtures"
   printf 'not a version document\n' > "$fixtures/versions_view.json"
   export FIXTURE_DIR="$fixtures"
-  run_wrapper_expecting "$EXPECTED_SERVING_SHA" DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper_expecting "$EXPECTED_SERVING_SHA"
   [ "$status" -ne 0 ]
   [[ "$output" == *"printed no JSON document"* ]]
   refute_step_called triggers
@@ -267,7 +267,7 @@ run_wrapper_expecting() {
 
 @test "windowless_postflight_fail: after a successful promote, fails loud with NO automatic recovery" {
   export POSTFLIGHT_CMD="false"
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper
   [ "$status" -ne 0 ]
   [[ "$output" == *"Windowless postflight failed AFTER the final promotion"* ]]
   assert_step_called promote_final
@@ -309,7 +309,7 @@ run_wrapper_expecting() {
 ]
 EOF
   export FIXTURE_DIR="$split_fixtures"
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper
   [ "$status" -ne 0 ]
   [[ "$output" == *"expected exactly one version in the newest deployment, found 2"* ]]
   assert_step_called deployments_list
@@ -317,27 +317,8 @@ EOF
   refute_step_called upload_final
 }
 
-@test "unknown_mode_aborts: an unrecognized DEPLOY_PIPELINE_MODE runs nothing" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowlss
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"unrecognized DEPLOY_PIPELINE_MODE"* ]]
-  [ ! -s "$CALLS_LOG" ]
-}
-
-
-@test "a legacy windowless wrapper cannot mutate before transferring its preflight" {
-  export DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_ENV_STAGING=staging PREFLIGHT_CMD=true
-  unset WINDOWLESS_PREFLIGHT_CMD
-  local python
-  python=$(command -v python3.14 || command -v python3)
-  run "$python" "$HARNESS_DIR/../deploy-lib/safe_deploy_pipeline.py" staging --sha smoketest
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"WINDOWLESS_PREFLIGHT_CMD"* ]]
-  [ ! -s "$CALLS_LOG" ]
-}
-
 @test "a preflight for a different serving version refuses before trigger or database changes" {
-  export WINDOWLESS_PREFLIGHT_CMD="sh -c 'echo checked=\$1/\$2; test \"\$2\" = 99999999-9999-9999-9999-999999999999' preflight"
+  export PREFLIGHT_CMD="sh -c 'echo checked=\$1/\$2; test \"\$2\" = 99999999-9999-9999-9999-999999999999' preflight"
   export MIGRATE_CMD="touch '$BATS_TEST_TMPDIR/migrated'"
   run_wrapper
   [ "$status" -ne 0 ]
@@ -358,7 +339,7 @@ make_changed_deployment() {
   make_changed_deployment
   cp -R "$FIXTURE_DIR" "$BATS_TEST_TMPDIR/fixtures"
   export FIXTURE_DIR="$BATS_TEST_TMPDIR/fixtures"
-  export WINDOWLESS_PREFLIGHT_CMD="sh -c 'cp changed.json fixtures/deployments_list.json'"
+  export PREFLIGHT_CMD="sh -c 'cp changed.json fixtures/deployments_list.json'"
   run_wrapper
   [ "$status" -ne 0 ]
   [[ "$output" == *"before updating triggers"* ]]

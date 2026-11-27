@@ -18,9 +18,6 @@ from collections.abc import Mapping, Sequence
 
 import version_runtime
 
-# A previous pin must reject an upgraded wrapper before running its old hooks.
-WINDOWLESS = "windowless-v1"
-
 ENVIRONMENTS = ("staging", "production")
 
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
@@ -188,23 +185,15 @@ class DeployConfig:
 
 def resolve(invocation: Invocation, environ: Mapping[str, str]) -> DeployConfig:
     """Refuse incompatible configurations before any live mutation."""
-    mode = environ.get("DEPLOY_PIPELINE_MODE", "")
-    if mode != WINDOWLESS:
-        raise ConfigError(
-            f"deploy-lib: unrecognized DEPLOY_PIPELINE_MODE '{mode}' (expected '{WINDOWLESS}')"
-        )
-
     key = f"DEPLOY_WRANGLER_ENV_{invocation.env.upper()}"
     wrangler_env = environ.get(key)
     if not wrangler_env:
         raise ConfigError(f"deploy-lib: set {key} for env={invocation.env}")
 
-    # Older wrappers delegated the database fence check to the toolkit. A
-    # distinct hook name makes upgrading a deliberate transfer of that check.
-    preflight_cmd = _hook(environ.get("WINDOWLESS_PREFLIGHT_CMD"))
+    preflight_cmd = _hook(environ.get("PREFLIGHT_CMD"))
     if preflight_cmd is None:
         raise ConfigError(
-            "deploy-lib: set WINDOWLESS_PREFLIGHT_CMD to verify live migration safety before deployment"
+            "deploy-lib: set PREFLIGHT_CMD to verify live migration safety before deployment"
         )
 
     migrate_cmd = _hook(environ.get("MIGRATE_CMD"))

@@ -167,8 +167,7 @@ not the OLDER slot" (which catches `.[0]` vs `.[-1]` regressions).
    - Sets `WRANGLER=$HARNESS_DIR/bin/mock-wrangler.sh`
    - Sets `FIXTURE_DIR=$YOUR_FIXTURE_DIR`
    - Sets `MOCK_LOG_FILE=$BATS_TEST_TMPDIR/calls.log`
-   - Sets `DEPLOY_PIPELINE_MODE=windowless-v1` and stubs its own hooks'
-     database reads (`WINDOWLESS_PREFLIGHT_CMD`, `MIGRATE_CMD`,
+   - Stubs its own hooks' database reads (`PREFLIGHT_CMD`, `MIGRATE_CMD`,
      `POSTFLIGHT_CMD`): the mock answers only the calls the pipeline itself
      makes, and any other `wrangler` call reads as `other` and prints nothing
    - Has one `@test` per `MOCK_FAIL_AT` value (permanent failures) and asserts
