@@ -59,23 +59,33 @@ for the deployment verifier, nothing for the CI-execution gate.
 
 Each release carries `cloudflare-deploy-toolkit-<tag>.tar.gz`, the tagged tree
 under a `cloudflare-deploy-toolkit-<tag>/` prefix. Pin the archive URL and the
-reviewed digest from the release's `SHA256SUMS`. Verify the digest before
-extracting the archive.
+reviewed digest from the release's `SHA256SUMS`. Keep the tag and digest in
+the consumer's checkout alongside the matching wrapper. Run this setup from
+that checkout's root with `TOOLKIT_TAG` and `TOOLKIT_SHA256` set from its pin.
 
 ```sh
+set -eu
 TAG=${TOOLKIT_TAG:?Set TOOLKIT_TAG to a published release tag}
 SHA256=${TOOLKIT_SHA256:?Set TOOLKIT_SHA256 to the pinned archive digest}
 URL=https://github.com/curlewlabs-com/cloudflare-deploy-toolkit/releases/download/$TAG/cloudflare-deploy-toolkit-$TAG.tar.gz
-curl -fsSLo toolkit.tar.gz "$URL" &&
-  printf '%s  toolkit.tar.gz\n' "$SHA256" | shasum -a 256 -c - &&
-  mkdir -p vendor &&
-  tar -xzf toolkit.tar.gz -C vendor
+INSTALL_DIR=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/toolkit.XXXXXXXX")
+ARCHIVE="$INSTALL_DIR/toolkit.tar.gz"
+curl -fsSLo "$ARCHIVE" --retry 3 --retry-connrefused "$URL"
+printf '%s  %s\n' "$SHA256" "$ARCHIVE" | shasum -a 256 -c -
+tar -xzf "$ARCHIVE" -C "$INSTALL_DIR"
+TOOLKIT_DIR=$(cd "$INSTALL_DIR/cloudflare-deploy-toolkit-$TAG" && pwd)
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'DEPLOY_TOOLKIT_DIR=%s\n' "$TOOLKIT_DIR" >> "$GITHUB_ENV"
+else
+  printf '%s\n' "$TOOLKIT_DIR"
+fi
 ```
 
-In CI, extract the archive before deploying. Set the job's
-`DEPLOY_TOOLKIT_DIR` to the absolute path of the extracted directory so the
-wrapper and the verification step can both find it. See the
-[workflow setup](workflow-examples/README.md).
+In GitHub Actions, run this as its own setup step after checkout and before
+deploying. It sets `DEPLOY_TOOLKIT_DIR` for later steps after verifying and
+extracting the archive. The temporary directory keeps the checkout clean for
+the provenance gate. For a local invocation, set `DEPLOY_TOOLKIT_DIR` to the
+path printed by the setup. See the [workflow setup](workflow-examples/README.md).
 
 #### Git submodule
 

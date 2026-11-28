@@ -37,10 +37,13 @@ Linux, expose the system GNU grep as `ggrep` if that name is absent.
 Start from `test/example-fixtures/` when adding a pipeline case. Re-capture
 only when a new test needs a response or Wrangler changes its output. Use
 [the capture helpers](lib/capture-helpers.sh) for dry-run or read-only calls.
-When capturing real output, use [the sanitizer](bin/sanitize-wrangler-text.sh)
-with `--scrub-binding NAME` for each binding that carries a sensitive value.
-The fixture UUIDs in [test-slots.sh](lib/test-slots.sh) make the older, serving,
-and newly uploaded versions distinguishable in a call log.
+
+- For Wrangler text output, use [the sanitizer](bin/sanitize-wrangler-text.sh)
+  with `--scrub-binding NAME` for each binding that carries a sensitive value.
+- For `deployments list --json`, use `reshape_deployments_list_json` in the
+  capture helpers. It replaces deployment annotations, which can carry a
+  commit SHA, and assigns distinct older and serving IDs. Use the test slots
+  from [test-slots.sh](lib/test-slots.sh) so the suites can identify each version.
 
 Review fixture diffs for operational data before committing, then run
 [the fixture purity scanner](bin/check-fixture-purity.sh) on the changed fixture

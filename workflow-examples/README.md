@@ -40,7 +40,8 @@ Specifically:
    newest-first and takes the first whose latest status is `success`. To adapt:
    - Replace the path globs with everything that should trigger a redeploy (your
      service directory, any shared i18n / config / lockfile that affects the
-     bundle).
+     bundle, and the toolkit pin or submodule path). Include the toolkit path
+     when staging should exercise an upgrade to the deploy procedure.
    - **Keep the step's `Anchor -> HEAD` echo.** The other end of the diff is
      `github.event.workflow_run.head_sha`, the commit CI validated - not the
      head SHA the Actions UI and the runs API report for the run, which on a
@@ -100,11 +101,14 @@ Specifically:
 
 9. **Toolkit location and verification** - make the toolkit available in the
    deploy job before running the wrapper. For the default submodule location,
-   `vendor/cloudflare-deploy-toolkit`, enable submodule checkout. For a
-   [release archive](../README.md#release-archive), verify and extract it in
-   the job, then set job-level `DEPLOY_TOOLKIT_DIR` to its absolute directory
-   so both the wrapper and `Verify deployment` receive it. A variable exported
-   inside the wrapper is scoped to that process and its children.
+   `vendor/cloudflare-deploy-toolkit`, keep submodule checkout enabled. For a
+   [release archive](../README.md#release-archive), read the tag and digest
+   from the checked-out revision alongside its wrapper. A `workflow_run`
+   job can check out an earlier revision than the one providing the workflow
+   YAML, so keeping the pin with the wrapper couples their versions. Run the
+   archive setup in a separate step, which writes `DEPLOY_TOOLKIT_DIR` to
+   `GITHUB_ENV` after successful verification and extraction. Both the wrapper
+   and `Verify deployment` use that path.
 
    The example verifies the deployment timestamp. If your Worker echoes its
    build SHA, also export `VERIFY_DEPLOYMENT_EXPECTED_SHA` (the commit you

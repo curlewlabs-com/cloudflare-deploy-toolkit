@@ -94,10 +94,10 @@ exec python3.14 "$DEPLOY_TOOLKIT_DIR/deploy-lib/safe_deploy_pipeline.py" "$@"
 The properties of that wrapper are worth naming, and each follows from the
 pipeline being a program rather than a library:
 
-- **Config is exported.** A subprocess reads the wrapper's environment. For a
-  release archive, set the absolute `DEPLOY_TOOLKIT_DIR` in the CI job so it
-  reaches both the wrapper and the separate verification step. See the
-  [workflow setup](../workflow-examples/README.md).
+- **Config is exported.** A subprocess reads the wrapper's environment. The
+  [release archive setup](../README.md#release-archive) makes the absolute
+  `DEPLOY_TOOLKIT_DIR` available to both the wrapper and the separate workflow
+  verification step.
 - **Hooks are commands.** The pipeline appends the environment and, for preflight,
   the captured version ID. A command may carry its own leading arguments (the example
   above passes `--require-schema` before the env). The strings are split with
