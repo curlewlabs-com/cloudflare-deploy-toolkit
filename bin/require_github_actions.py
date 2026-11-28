@@ -1,31 +1,16 @@
 #!/usr/bin/env python3
 """CI-execution gate for service-mutating operations.
 
-Worker/website deploys, D1 schema applies, DB unlocks, and FCM secret rotations
-change the deployed service, so they run in GitHub Actions - where the scoped
-write tokens live - not from a local checkout. This is the in-repo half of the
-privilege split; the capability half is that dev machines default to a read-only
-Cloudflare token, so a local run also needs a deliberately-exported write token. Running in Actions and exporting that
-token are deliberate acts, never an oopsie.
+Operations that change a deployed service run in GitHub Actions, where their
+workflows can supply scoped write credentials. Local recovery requires an
+explicit override and a write-capable Cloudflare token.
 
 Invoked as a command at each mutating chokepoint, like check_deploy_ref.py. Pass
 a short operation label as the first argument for the refusal message.
 
-Authorizes ONLY on GITHUB_ACTIONS=true or the ALLOW_LOCAL_DEPLOY break-glass -
-deliberately no WRANGLER-name escape hatch. This gate is decoupled from the CLI a
-guarded script actually runs (a secret-rotation script may hardcode its own
-wrangler and take no override), so keying a skip off WRANGLER=...mock-wrangler.sh would clear
-the gate while the real CLI still mutated - a genuine bypass. Local tests that
-drive a guarded script through a wrangler double simulate CI (GITHUB_ACTIONS=
-true) instead, and a deploy wrapper that refuses any WRANGLER value outright
-needs no skip carved for it.
-
-Class-Audit note for the allow-capable input class: the `GITHUB_ACTIONS` and `ALLOW_LOCAL_DEPLOY` authorizing reads are
-whole-string equality against a single literal, not a pattern, so no token class
-widens the allow set - an unset, empty, differently-cased, or whitespace-padded
-value is a refusal. `GITHUB_ACTIONS` is compared to "true" rather than tested for
-truthiness because Actions sets that exact string and a truthiness test would
-authorize on "false".
+The caller can select its own executable independently of WRANGLER, so that
+variable is no basis for authorizing an operation. Tests that drive a guarded
+script through a Wrangler double simulate the GitHub Actions environment.
 """
 
 from __future__ import annotations
@@ -45,7 +30,9 @@ def decide(argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, list[str]]
     """
     op = argv[0] if argv and argv[0] else DEFAULT_OP
 
-    # GitHub Actions sets GITHUB_ACTIONS=true; that is the sanctioned path.
+    # Actions sets "true" exactly. A truthiness check would also accept "false".
+    # Literal matches keep unset, empty, padded, and differently cased values
+    # outside both authorization paths.
     if env.get("GITHUB_ACTIONS") == "true":
         return 0, []
 

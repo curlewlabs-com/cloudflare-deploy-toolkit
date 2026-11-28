@@ -24,12 +24,7 @@ and again before promoting the new build.
    and fails closed unless the live build matches the expected commit - the
    timestamp alone passes for a sibling deploy that landed between promote and
    verify.
-3. **A test harness** for the deploy pipeline and the gates: a mock wrangler
-   binary, fixture replay, named-step failure injection, a fixture-purity scan,
-   and a Python suite per `bin/` gate driving its real executable - the shapes
-   split by what they drive, since a gate's subject is a git repo or an API
-   response rather than a wrangler fixture flow.
-4. **A workflow example** wires a deployment and its verification into GitHub
+3. **A workflow example** wires a deployment and its verification into GitHub
    Actions. The provenance and CI-execution gates can also run independently.
 
 ## Why it exists
@@ -50,8 +45,6 @@ changed. Consumer migrations must work with the old Worker still serving.
   GitHub-hosted runner gets one from `actions/setup-python`.
 - POSIX `sh` for the shell pieces; `git` for the provenance gate; `curl` and
   `jq` for the deployment verifier; `wrangler` for the pipeline itself.
-- To run the toolkit's own tests: `bats`, `jq`, a current `bash`, and GNU grep
-  on PATH as `ggrep` (`test-harness/README.md`).
 
 ### Install
 
@@ -62,9 +55,41 @@ the gates are invoked as commands. What each gate needs on PATH beyond a Python
 3.14 interpreter is what it spawns: `git` for the provenance gate, `curl` and `jq`
 for the deployment verifier, nothing for the CI-execution gate.
 
-Options for getting the toolkit into your repo:
+#### Release archive
 
-#### 1. Git submodule (recommended)
+Each release carries `cloudflare-deploy-toolkit-<tag>.tar.gz`, the tagged tree
+under a `cloudflare-deploy-toolkit-<tag>/` prefix. Pin the archive URL and the
+reviewed digest from the release's `SHA256SUMS`. Keep the tag and digest in
+the consumer's checkout alongside the matching wrapper. Run this setup from
+that checkout's root with `TOOLKIT_TAG` and `TOOLKIT_SHA256` set from its pin.
+
+```sh
+set -eu
+TAG=${TOOLKIT_TAG:?Set TOOLKIT_TAG to a published release tag}
+SHA256=${TOOLKIT_SHA256:?Set TOOLKIT_SHA256 to the pinned archive digest}
+URL=https://github.com/curlewlabs-com/cloudflare-deploy-toolkit/releases/download/$TAG/cloudflare-deploy-toolkit-$TAG.tar.gz
+INSTALL_DIR=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/toolkit.XXXXXXXX")
+ARCHIVE="$INSTALL_DIR/toolkit.tar.gz"
+curl -fsSL --max-time 60 --retry 3 --retry-connrefused --retry-max-time 120 \
+  -o "$ARCHIVE" "$URL"
+printf '%s  %s\n' "$SHA256" "$ARCHIVE" | shasum -a 256 -c -
+tar -xzf "$ARCHIVE" -C "$INSTALL_DIR"
+TOOLKIT_DIR=$(cd "$INSTALL_DIR/cloudflare-deploy-toolkit-$TAG" && pwd)
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'DEPLOY_TOOLKIT_DIR=%s\n' "$TOOLKIT_DIR" >> "$GITHUB_ENV"
+else
+  printf '%s\n' "$TOOLKIT_DIR"
+fi
+```
+
+In GitHub Actions, run this as its own setup step in the deploy job after
+checkout and any change detection. It sets `DEPLOY_TOOLKIT_DIR` for later steps
+after verifying and extracting the archive. The temporary directory keeps the
+checkout clean for the provenance gate. For a local invocation, set
+`DEPLOY_TOOLKIT_DIR` to the path printed by the setup. See the
+[workflow setup](workflow-examples/README.md).
+
+#### Git submodule
 
 A submodule records the exact commit in the consuming repository. Review that
 commit and its matching pipeline guide before committing the submodule:
@@ -80,7 +105,7 @@ Then in your wrapper script:
 
 ```sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-export DEPLOY_TOOLKIT_DIR="$SCRIPT_DIR/../vendor/cloudflare-deploy-toolkit"
+export DEPLOY_TOOLKIT_DIR="${DEPLOY_TOOLKIT_DIR:-$SCRIPT_DIR/../vendor/cloudflare-deploy-toolkit}"
 exec python3.14 "$DEPLOY_TOOLKIT_DIR/deploy-lib/safe_deploy_pipeline.py" "$@"
 ```
 
@@ -88,70 +113,9 @@ A wrapper whose own hook scripts talk to Cloudflare sources
 `deploy-lib/wrangler-retry.sh` as well, so those reads retry against the same
 roster; `DEPLOY_TOOLKIT_DIR` is how that lib finds the roster.
 
-#### 2. Vendor copy
-
-Copy the whole of `deploy-lib/` for the deploy wrapper - the pipeline refuses to
-load without the modules beside it, which it imports by bare name - plus
-`bin/verify_deployment.py` if you want the shared post-deploy verify step, and the other gates your workflow uses. If you
-also copy the workflow examples, keep the helper path layout consistent or
-update the YAML to match your vendored location. You'll need to track upstream
-manually for fixes.
-
-#### 3. Release archive
-
-Each release carries `cloudflare-deploy-toolkit-<tag>.tar.gz`, the tagged tree
-under a `cloudflare-deploy-toolkit-<tag>/` prefix, and a `SHA256SUMS` file
-beside it. Releases are immutable, so the archive's digest never changes once
-published; pin the URL and the digest, and verify before extracting:
-
-```sh
-TAG=${TOOLKIT_TAG:?Set TOOLKIT_TAG to a published release tag}
-URL=https://github.com/curlewlabs-com/cloudflare-deploy-toolkit/releases/download/$TAG/cloudflare-deploy-toolkit-$TAG.tar.gz
-curl -fsSLo toolkit.tar.gz "$URL" &&
-  echo "<sha256 from SHA256SUMS>  toolkit.tar.gz" | shasum -a 256 -c - &&
-  tar -xzf toolkit.tar.gz -C vendor
-```
-
-#### 4. Single-file curl
-
-Run this script to install the pinned pipeline and verify helper into a fresh
-versioned directory. Switch your wrapper to that directory after installation:
-
-```sh
-set -eu
-REF=${TOOLKIT_REF:?Set TOOLKIT_REF to the commit containing these instructions}
-BASE=https://raw.githubusercontent.com/curlewlabs-com/cloudflare-deploy-toolkit/$REF
-DEST="vendor/cloudflare-deploy-toolkit-$REF"
-mkdir -p vendor
-STAGE=$(mktemp -d vendor/.toolkit.XXXXXXXX)
-trap 'rm -rf "$STAGE"' EXIT
-mkdir -p "$STAGE/deploy-lib" "$STAGE/bin"
-for f in deploy-lib/wrangler-retry.sh \
-    deploy-lib/safe_deploy_pipeline.py deploy-lib/deploy_config.py \
-    deploy-lib/deploy_state.py deploy-lib/deploy_reporting.py \
-    deploy-lib/deploy_versions.py \
-    deploy-lib/deploy_recovery.py \
-    deploy-lib/deploy_diagnostics.py \
-    deploy-lib/wrangler_runner.py \
-    deploy-lib/wrangler_transient.py deploy-lib/deployments_list.py \
-    deploy-lib/diagnostics_path.py \
-    deploy-lib/retry_sleep.py deploy-lib/version_message.py \
-    deploy-lib/version_runtime.py bin/verify_deployment.py; do
-  curl -fsSLo "$STAGE/$f" "$BASE/$f"
-done
-chmod +x "$STAGE/bin/verify_deployment.py"
-python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$STAGE" "$DEST"
-```
-
-Always pin to a specific tag rather than `main`.
-
-The tools depend on the directory layout, which is why this fetches into a tree
-rather than flattening into one directory: `wrangler-retry.sh` resolves its
-roster under the `DEPLOY_TOOLKIT_DIR` your wrapper exports, the Python modules
-import each other by bare name from the directory they share, and each refuses
-to load without the files it needs. The fetch list above is the roster; this
-paragraph does not repeat it. A flat copy, or a roster short one file, fails at
-startup rather than mid-deploy.
+Keep the installed tree together. The pipeline loads its Python modules from
+`deploy-lib/`, and `wrangler-retry.sh` uses `DEPLOY_TOOLKIT_DIR` to find the retry
+classifier.
 
 Once installed, write a wrapper: it exports the
 Wrangler environment config variables plus its hook commands and runs
@@ -172,21 +136,7 @@ cloudflare-deploy-toolkit/
 +-- deploy-lib/                   the deploy pipeline
 |   +-- README.md                 API, hook contract, env var config, constraints,
 |   |                             and what every other file here owns
-+-- test-harness/                 test-time tooling for the deploy pipeline
-|   +-- README.md                 architecture: layers, fixture format, slot UUIDs
-|   +-- bin/
-|   |   +-- sanitize-wrangler-text.sh    PII scrub for fixture capture
-|   |   +-- mock-wrangler.sh             fake wrangler binary, replays fixtures
-|   |   +-- check-fixture-purity.sh      scans committed fixtures for leaks
-|   +-- lib/
-|   |   +-- test-slots.sh                shared slot UUID constants
-|   |   +-- capture-helpers.sh           sourceable wrappers for wrangler calls
-|   +-- test/
-|       +-- test-*.bats, test_*.py             the suites; test-harness/README.md sec. Test layers names the risk each owns
-|       +-- example-deploy-wrapper.sh          minimal example wrapper; what the end-to-end suites drive
-|       +-- example-hook.sh                    the hook command the example wrapper points at
-|       +-- example-fixtures/                  generic mock-wrangler fixtures for the end-to-end suites
-|       +-- check.sh                           runs bats, the Python suites, and the vendored-path smoke from CI
++-- test-harness/                 repository tests and fixtures
 +-- workflow-examples/            sample GitHub Actions YAML
     +-- README.md                 how to adapt the examples for a new Worker
     +-- deploy.yml                generalized deploy workflow with safe pipeline
@@ -200,10 +150,6 @@ Read the per-area READMEs in this order:
   [`deploy-lib/README.md`](deploy-lib/README.md). You'll write a wrapper that
   supplies config and the hooks and hands off to the pipeline entry point - the
   pipeline does the rest.
-- **For testing your deploy script:**
-  [`test-harness/README.md`](test-harness/README.md). You'll write a small
-  `.bats` test driver that points at `bin/mock-wrangler.sh`, plus a capture
-  script that calls `lib/capture-helpers.sh`.
 - **For your CI workflow:**
   [`workflow-examples/README.md`](workflow-examples/README.md). The examples are
   working YAML with the consumer-specific bits flagged for replacement, and they
@@ -298,12 +244,8 @@ release is cut is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing).
 
 ## Running the tests
 
-```sh
-./test-harness/test/check.sh
-```
-
-It runs the Bats suites, the Python suites, and the same run again from a
-vendored copy of the tree.
+See the [contributor test guide](test-harness/README.md) for prerequisites,
+test commands, and fixture guidance.
 
 CI type-checks Python with mypy in strict mode. In a Python 3.14 environment:
 
