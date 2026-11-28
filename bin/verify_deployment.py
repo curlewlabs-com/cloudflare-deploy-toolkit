@@ -34,26 +34,6 @@ The spawned binaries, each for a reason `json`/`urllib` does not cover:
         `select(.maintenanceMode == false and .deployLocked == false) | .sha`, a
         readiness predicate no dotted-path reader can express. Every other JSON
         read here is json.loads.
-
-Class-Audit, the parsing classes this file carries:
-
-  Timestamp (Cloudflare `created_on`). Round-trip through the canonical parser
-  rather than a shape regex, so an impossible date raises instead of passing a
-  range check. An offset is REQUIRED: a naive timestamp is refused rather than
-  assumed UTC, because a reader that guesses the zone is wrong whichever way it
-  guesses, and the header's defect is what that costs.
-  Whitespace-padded, empty, and non-string values all fail closed through the
-  same parser.
-
-  Live-SHA body. Untyped-object boundary: the body is whatever the URL returned,
-  including a WAF challenge page, so it is never parsed here - jq reads it and
-  anything that is not a bare matching string collapses to no match. Comparison
-  is whole-string equality against a non-empty expected SHA, so a null, absent,
-  multi-line, or filtered-out result cannot match.
-
-  Deployments envelope. Read with json.loads and narrowed per field; a missing
-  `.result.deployments[0].created_on`, a non-list, or an unparseable document is
-  the same "no deployments found" refusal rather than a crash.
 """
 
 from __future__ import annotations
@@ -115,11 +95,9 @@ def _int_env(env: Mapping[str, str], name: str, default: int) -> int:
 
 
 def parse_deploy_epoch(timestamp: str) -> int:
-    """Return the UTC epoch seconds for a Cloudflare `created_on` value.
-
-    Raises VerifyFailure on anything this cannot prove it read correctly,
-    including a timestamp carrying no UTC offset - see the Class-Audit note.
-    """
+    """Return the UTC epoch seconds for a Cloudflare `created_on` value."""
+    # The ISO parser checks the calendar as well as the format. Stripping
+    # surrounding whitespace still leaves empty or impossible dates invalid.
     try:
         parsed = datetime.fromisoformat(timestamp.strip())
     except ValueError, TypeError:
@@ -127,6 +105,7 @@ def parse_deploy_epoch(timestamp: str) -> int:
             f"::error::Could not parse deployment timestamp: {timestamp}",
             to_stderr=True,
         ) from None
+    # A naive timestamp would make the age depend on the runner's time zone.
     if parsed.tzinfo is None:
         raise VerifyFailure(
             f"::error::Deployment timestamp carries no UTC offset, so its zone is a guess: {timestamp}",
@@ -147,6 +126,8 @@ def _is_json_array(value: object) -> TypeGuard[list[object]]:
 
 def latest_deploy_timestamp(document: str, script_name: str) -> str:
     """Pull `.result.deployments[0].created_on` out of the deployments envelope."""
+    # A malformed response or a missing, empty, or non-string timestamp gives
+    # the same refusal. Neither supplies an age the verifier can trust.
     try:
         payload: object = json.loads(document)
     except json.JSONDecodeError:
@@ -258,6 +239,8 @@ def _verify_live_sha(
     for attempt in range(1, attempts + 1):
         last_body = _fetch_live_sha_body(env, url, header)
         live_sha = _extract_sha(last_body, sha_filter)
+        # Match the full jq output so one matching line in a multi-value
+        # response cannot pass the live check for a different build.
         if live_sha == expected_sha:
             print(
                 f"Live {script_name} is serving expected SHA {expected_sha}"

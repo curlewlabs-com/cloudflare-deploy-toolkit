@@ -1,262 +1,45 @@
-# test-harness
+# Toolkit tests
 
-Test-time tooling for shell scripts that orchestrate Cloudflare Workers deploys
-via the `wrangler` CLI. Lets you exercise every documented failure path of your
-deploy script (cron-limit error, migration failure, postflight
-failure, etc.) without ever calling real wrangler.
+This directory holds the repository's tests for the deploy pipeline, gates, and
+fixture tooling. The pipeline tests replay Wrangler fixtures through a test
+double, so they need no Cloudflare account.
 
-## How it fits together
+## Run locally
 
-```
-                +----------------------------------+
-                |  consumer's deploy-safe.sh       |
-                |  (~30-line wrapper that hands    |
-                |   off to ../deploy-lib/ - that's |
-                |   where the orchestration logic  |
-                |   lives, in either language)     |
-                +------------+---------------------+
-                             | $WRANGLER (env var)
-                             v
-                +----------------------------------+
-                |  bin/mock-wrangler.sh            |
-                |  - classifies subcommands        |
-                |  - logs every call               |
-                |  - injects permanent failures    |
-                |    via MOCK_FAIL_AT              |
-                |  - injects transient failures    |
-                |    via MOCK_TRANSIENT_FAIL_AT    |
-                |  - reads fixtures from           |
-                |    $FIXTURE_DIR                  |
-                +------------+---------------------+
-                             | cat
-                             v
-        +----------------------------------------------+
-        |  consumer's test/fixtures/wrangler/          |
-        |  +-- deployments_list.json   (parsed by jq)  |
-        |  +-- versions_view.json      (serving build) |
-        |  +-- upload_final.txt        (Worker Ver ID) |
-        |  +-- triggers.txt            (sanitized)     |
-        |  +-- *.txt                   (empty markers) |
-        +----------------------------------------------+
-                             ^
-                             | written by
-        +--------------------+----------------------+
-        |  consumer's capture-wrangler-fixtures.sh  |
-        |  +-- sources lib/capture-helpers.sh       |
-        |  +-- pipes through bin/sanitize-          |
-        |  |   wrangler-text.sh with --scrub-       |
-        |  |   binding for consumer-specific PII    |
-        |  +-- reshapes deployments_list with       |
-        |      slot UUIDs from lib/test-slots.sh    |
-        +-------------------------------------------+
+From the repository root, run the same entry point as CI.
+
+```sh
+./test-harness/test/check.sh
 ```
 
-## What lives where
-
-- **`bin/sanitize-wrangler-text.sh`** - [OK]: Pure text transform; takes
-  `--scrub-binding NAME` for binding values to scrub
-- **`bin/mock-wrangler.sh`** - [OK]: Classifies wrangler subcommands and reads
-  fixtures from `$FIXTURE_DIR`
-- **`bin/check-fixture-purity.sh`** - [OK]: Generic patterns built in (UUIDs,
-  account hex, emails, timestamps, ANSI). Takes optional consumer literals file
-- **`lib/test-slots.sh`** - [OK]: Shared slot UUID constants - sourced by mock,
-  sanitizer, and consumer test driver
-- **`lib/capture-helpers.sh`** - [OK]: Sourceable wrappers for safe wrangler
-  subcommands (dry-run / read-only only)
-- **`test/test-*.bats`, `test/test_*.py`** - [OK]: The suites. Which risk each
-  one owns is sec. Test layers below; its header says what its cases guard
-- **`test/example-deploy-wrapper.sh`** - [OK]: Minimal example consumer wrapper,
-  what the end-to-end suites drive; doubles as a working reference for someone
-  writing their first wrapper
-- **`test/example-hook.sh`** - [OK]: The no-op hook command the example wrapper
-  points its preflight, migration, and post-flight hooks at
-- **`test/example-fixtures/*`** - [OK]: Generic mock-wrangler fixtures the
-  end-to-end suites read
-- **`test/check.sh`** - [OK]: Runs `bats *.bats`, the `test_*.py` gate suites,
-  and a vendored-path smoke for the harness entrypoint
-- **consumer's `capture-wrangler-fixtures.sh`** - [OK]: Knows which DB, which
-  bindings to scrub, the slot-UUID reshape
-- **consumer's `test-deploy-safe-mock.bats`** - [OK]: Tests _the consumer's_
-  deploy script's specific failure paths
-- **consumer's `test-fixture-purity.bats`** - [OK]: Thin wrapper passing the
-  consumer's literals file to the harness check
-- **consumer's `forbidden-literals.txt`** - [OK]: Consumer-specific PII that the
-  generic patterns don't catch
+Put Bats, Python 3.14, `jq`, a current `bash`, and GNU grep as `ggrep` on
+`PATH`. On macOS, install `bats-core`, `python@3.14`, `jq`, `bash`, and `grep`
+with Homebrew. Put Homebrew's Bash first on `PATH`. The system Bash can continue
+past a failed `[[ ]]` assertion, which makes the test result unreliable. On
+Linux, expose the system GNU grep as `ggrep` if that name is absent.
 
 ## Test layers
 
-The record of which suite owns which risk. Each suite's header says what its
-cases guard; this section says which suite to read for a risk, not what its
-cases are.
+- Bats drives the real pipeline through `test/example-deploy-wrapper.sh` and
+  [the Wrangler double](bin/mock-wrangler.sh). Its failure-injection settings
+  let the suites check what runs after a failed deploy step. See
+  [the pipeline guide](../deploy-lib/README.md) for the expected recovery.
+- Python's `unittest` covers the pipeline's individual decisions and the
+  gates under [`../bin/`](../bin/). Run the relevant `test/test_*.py` file with
+  Python 3.14 to iterate on one suite.
+- The runner also executes the suites from a relocated toolkit tree to catch
+  assumptions about the checkout path.
 
-Toolkit self-tests, run in the toolkit's CI by `test/check.sh`:
+## Fixtures
 
-- **Deploy order and recovery** (`test-deploy-pipeline-smoke.bats`) - the
-  serving set, commit binding, migration order and rollback obligations.
-- **The uploaded runtime** (`test-deploy-pipeline-runtime.bats`) - an
-  unreadable or mismatched upload must never receive traffic.
+Start from `test/example-fixtures/` when adding a pipeline case. Re-capture
+only when a new test needs a response or Wrangler changes its output. Use
+[the capture helpers](lib/capture-helpers.sh) for dry-run or read-only calls and
+[the sanitizer](bin/sanitize-wrangler-text.sh) to scrub environment values.
+The fixture UUIDs in [test-slots.sh](lib/test-slots.sh) make the older, serving,
+and newly uploaded versions distinguishable in a call log.
 
-- **The classified-transient retry** (`test-deploy-pipeline-retry.bats`) -
-  recovers on representative allowlisted shapes, fails fast on non-retryable
-  ones including the edge render whose header a 5xx and a 4xx share, exhausted
-  budget propagates cleanly, the recovery rollback also retries, callers that
-  parse a captured document keep clean stdout on retry success, and
-  `total_wrangler_retries` is recorded accurately
-- **One module or gate on its own** (`test_*.py`) - a decision the pipeline
-  makes, a gate under `../bin/`, or the install roster, driven against real
-  documents or real throwaway repos with no deploy around it; the module's
-  docstring names what it guards
-- **The mock's wiring** (`test-mock-wrangler-smoke.bats`) - the mock classifies
-  a call and reads its fixture back
-- **Sanitizer regressions** (`test-sanitize-wrangler-text.bats`) - each scrub
-  pattern as a unit case
-- **Reshape regressions** (`test-capture-helpers.bats`) - slot-UUID mapping in
-  `reshape_deployments_list_json` (the original `.[0]` vs `.[-1]` swap that
-  motivated extracting this helper)
-
-Consumer CI:
-
-- **Fixture purity** (`check-fixture-purity.sh`, generic patterns plus consumer
-  literals) - anything that bypassed the sanitizer and ended up in committed
-  fixtures (account IDs, real UUIDs, real emails, real timestamps, ANSI codes,
-  leaked SHAs, real wrangler version strings)
-- **Consumer mock-driven orchestration** (consumer's
-  `test-deploy-safe-mock.bats`) - the consumer's wrapper-specific
-  failure-handling paths against committed fixtures captured from the consumer's
-  own wrangler config
-
-The toolkit layers verify the toolkit in isolation; the consumer layers verify
-the consumer's wiring against its own captured fixtures. A change to a body's
-step order is held by the end-to-end suite that owns that step above, and the
-unit layers guard against those suites silently lying because the fixtures or
-the helpers drifted.
-
-## Slot UUIDs
-
-The harness uses a small fixed alphabet of UUIDs across the mock, capture, and
-test driver. They're defined in `lib/test-slots.sh`:
-
-- **`WRANGLER_HARNESS_LATEST_UUID`** - `00000000-0000-0000-0000-000000000000`:
-  `.[-1]` of deployments list - current version, rollback target
-- **`WRANGLER_HARNESS_OLDER_UUID`** - `99999999-9999-9999-9999-999999999999`:
-  `.[0]` of the latest/prior slice - second-to-latest, forcing distinct latest
-  and prior fixture entries
-- **`WRANGLER_HARNESS_FINAL_UUID`** - `22222222-2222-2222-2222-222222222222`:
-  Returned by upload-final. The mock records every promotion attempt and accepts
-  only this complete target at full traffic.
-
-Why these specific values: they're trivially distinguishable (regex-wise) and
-the all-zero / all-9 / all-1 / all-2 patterns make it impossible to confuse a
-slot UUID with a real one in a fixture diff.
-
-The consumer's deploy script never references these constants - it just greps
-for whatever wrangler emits. The slots exist purely to give the test driver a
-way to make assertions like "wrangler rollback was called with the LATEST slot,
-not the OLDER slot" (which catches `.[0]` vs `.[-1]` regressions).
-
-## Onboarding a new consumer
-
-1. **Capture fixtures** by writing your own `capture-wrangler-fixtures.sh` that
-   sources `lib/capture-helpers.sh` and writes to your fixture directory. Your
-   script needs to know:
-   - `--scrub-binding NAME` - the `wrangler.toml` binding names whose values are
-     PII / environment-specific (one `--scrub-binding` per binding)
-   - The output path for the captured fixtures
-
-2. **Wire up the mock test** by writing a `.bats` driver that:
-   - Sets `WRANGLER=$HARNESS_DIR/bin/mock-wrangler.sh`
-   - Sets `FIXTURE_DIR=$YOUR_FIXTURE_DIR`
-   - Sets `MOCK_LOG_FILE=$BATS_TEST_TMPDIR/calls.log`
-   - Stubs its own hooks' database reads (`PREFLIGHT_CMD`, `MIGRATE_CMD`,
-     `POSTFLIGHT_CMD`): the mock answers only the calls the pipeline itself
-     makes, and any other `wrangler` call reads as `other` and prints nothing
-   - Has one `@test` per `MOCK_FAIL_AT` value (permanent failures) and asserts
-     on the call log
-   - Optionally adds `@test` cases using
-     `MOCK_TRANSIENT_FAIL_AT=<step>:<count>:<pattern>` to prove the retry helper
-     covers the consumer's wrapped wrangler calls - patterns are documented at
-     the top of `bin/mock-wrangler.sh`
-
-   A typical driver defines `run_deploy` / `assert_step` / `refute_step` helpers
-   wrapping the deploy invocation, then has one case per documented failure
-   point in the pipeline.
-
-3. **Wire up fixture purity** by writing a thin `.bats` wrapper that calls
-   `bin/check-fixture-purity.sh` with your fixture dir and a
-   `forbidden-literals.txt` file containing your consumer-specific PII strings
-   (binding values, real account IDs, etc.). The harness ships the generic
-   patterns (UUIDs, account hex, emails, timestamps); you only need to add the
-   strings unique to your deployment.
-
-4. **Run from CI** by chaining `test-harness/test/check.sh` and your wrappers
-   into your project's check suite (e.g. `bats your-test-dir/*.bats`).
-
-A consumer whose deploy hooks can run against a real local D1 may prefer that
-to the mock-driven layers: test the hooks against the real database, and let the
-toolkit's own smoke and retry suites cover the pipeline bodies. The pattern
-above is for a wrapper that cannot be exercised against a real database.
-
-## Re-capturing fixtures
-
-When to re-run:
-
-- After a wrangler version bump (`bunx wrangler --version` shows new value)
-- After a Cloudflare-side schema change to `deployments list --json`
-- If `check-fixture-purity.sh` flags something the sanitizer should have caught
-- **Never on a regular cadence** - re-capturing on every PR creates
-  change-detector noise on every wrangler bump
-
-After re-capture:
-
-```sh
-git diff <your-fixture-dir>             # review what changed
-bats <your-test-dir>/*.bats             # mock + purity must still pass
-```
-
-A clean `git diff` after re-capture means nothing drifted. The diffs below are
-red flags and need code changes, not just a fixture update:
-
-1. **`Worker Version ID:` line removed or renamed** - the upload step reads that
-   exact prefix out of wrangler's output. If wrangler renames it, the parse
-   breaks silently in production.
-2. **`deployments list --json` schema shape changed** - the capture step reads
-   the newest deployment's single serving version out of that document
-   (`deploy-lib/deployments_list.py` owns which shapes it refuses). If the shape
-   moves, every capture refuses and no deploy starts.
-
-## Test framework
-
-The harness uses [bats-core](https://github.com/bats-core/bats-core) for its
-fixture- and pipeline-oriented self-tests and Python's `unittest` for the `bin/`
-gate suites. Consumers should use bats for their `*.bats` drivers too. Install:
-
-- **Mac:** `brew install bats-core jq python@3.14 grep`
-- **WSL / Debian / Ubuntu:** `sudo apt install -y bats jq python3.14`
-  (Python 3.14 from the deadsnakes PPA where the release does not carry it),
-  then `sudo ln -sf /bin/grep /usr/local/bin/ggrep`
-- **Other Linux:** install `bats`, `jq`, and `python3` via your
-  distro's package manager (or `cargo install` / GitHub releases), and put GNU
-  grep on PATH as `ggrep`
-
-check-fixture-purity.sh additionally requires `ggrep`: it scans fixtures with a
-word-bounded pattern POSIX ERE does not define, and refuses to run rather than
-report a clean scan it never performed. macOS gets it from the `grep` formula;
-on Linux, symlink `ggrep` to the system GNU `grep`. The apt line names
-`/bin/grep` outright because `$(command -v grep)` prints alias text, not a path,
-wherever `grep` is aliased, which Ubuntu's stock `~/.bashrc` does. It links with
-`-f` so it also replaces a dangling `ggrep` that such a lookup left behind.
-
-The test runner falls through to the `test-harness/test/check.sh` shell script
-for the vendored-path smoke of the harness entrypoint.
-Assertion-bearing tests are split by what they drive: the wrangler fixture flows
-are `.bats` files, and the `bin/` gates are Python suites beside them, each
-pinning one gate through its real executable. `test/check.sh` prints install
-guidance when `bats` or `python3` is missing from PATH, so a config issue
-surfaces with actionable guidance instead of a later "command not found".
-
-The Bats suites assert with bare `[[ ]]` tests under errexit. macOS
-`/bin/bash` 3.2 runs on past a failing `[[ ]]`, so under it a suite would fail a
-test only on its last assertion and pass whatever the code under test does.
-`test/check.sh` probes the `bash` on `PATH` for this and refuses to run the
-suites under one that does not stop; on macOS, `brew install bash` puts a
-current one first.
+Review fixture diffs for operational data before committing, then run
+[the fixture purity scanner](bin/check-fixture-purity.sh) on the changed fixture
+set. If an upload's `Worker Version ID:` prefix or the deployments JSON shape
+changes, check the production parser before updating the fixture.

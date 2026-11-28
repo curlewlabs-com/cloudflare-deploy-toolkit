@@ -3,23 +3,12 @@
 # of the toolkit (deploy-lib, mock-wrangler, capture helpers, sanitizer,
 # example wrapper) wires together correctly.
 #
-# Consumers also chain into this from their own check scripts via the
-# toolkit README onboarding instructions.
-#
 # What runs:
 #   - bats on every test/*.bats file; each suite's header says what it covers
 #   - the Python unit suites beside this file, which are what pin the gates in
 #     bin/ - the provenance gate's HEAD and SHA modes against real throwaway repos, the
 #     CI-execution gate's allow/deny matrix, and the deployment verifier's
 #     timestamp, skew, and live-SHA behavior
-#
-# What does NOT run here (lives in the consumer's CI):
-#   - check-fixture-purity.sh against any committed fixtures (the
-#     harness owns no consumer fixtures, only the example fixtures
-#     used by test-deploy-pipeline-smoke.bats)
-#   - the consumer's own deploy-script orchestration test (which
-#     looks structurally identical to test-deploy-pipeline-smoke.bats
-#     but is pointed at the consumer's wrapper)
 #
 # Bats-core and Python power the toolkit self-tests. Install via
 # `brew install bats-core jq python@3.14 grep` on Mac,
@@ -90,8 +79,7 @@ done
 if [ "${DEPLOY_TOOLKIT_SKIP_RELOCATION_SMOKE:-0}" != "1" ]; then
     echo ""
     echo "> relocation smoke"
-    # The toolkit is documented for vendored/submodule installs, so the harness
-    # entrypoint must work after a consumer copies it into their own tree.
+    # Exercise the installed layout to catch paths tied to this checkout.
     RELOCATE_TMPDIR=$(mktemp -d)
     mkdir -p "$RELOCATE_TMPDIR/vendor"
     cp -R "$TOOLKIT_DIR" "$RELOCATE_TMPDIR/vendor/cloudflare-deploy-toolkit"
