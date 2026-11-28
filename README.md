@@ -70,7 +70,8 @@ SHA256=${TOOLKIT_SHA256:?Set TOOLKIT_SHA256 to the pinned archive digest}
 URL=https://github.com/curlewlabs-com/cloudflare-deploy-toolkit/releases/download/$TAG/cloudflare-deploy-toolkit-$TAG.tar.gz
 INSTALL_DIR=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/toolkit.XXXXXXXX")
 ARCHIVE="$INSTALL_DIR/toolkit.tar.gz"
-curl -fsSLo "$ARCHIVE" --retry 3 --retry-connrefused "$URL"
+curl -fsSL --max-time 60 --retry 3 --retry-connrefused --retry-max-time 120 \
+  -o "$ARCHIVE" "$URL"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE" | shasum -a 256 -c -
 tar -xzf "$ARCHIVE" -C "$INSTALL_DIR"
 TOOLKIT_DIR=$(cd "$INSTALL_DIR/cloudflare-deploy-toolkit-$TAG" && pwd)
@@ -81,11 +82,12 @@ else
 fi
 ```
 
-In GitHub Actions, run this as its own setup step after checkout and before
-deploying. It sets `DEPLOY_TOOLKIT_DIR` for later steps after verifying and
-extracting the archive. The temporary directory keeps the checkout clean for
-the provenance gate. For a local invocation, set `DEPLOY_TOOLKIT_DIR` to the
-path printed by the setup. See the [workflow setup](workflow-examples/README.md).
+In GitHub Actions, run this as its own setup step in the deploy job after
+checkout and any change detection. It sets `DEPLOY_TOOLKIT_DIR` for later steps
+after verifying and extracting the archive. The temporary directory keeps the
+checkout clean for the provenance gate. For a local invocation, set
+`DEPLOY_TOOLKIT_DIR` to the path printed by the setup. See the
+[workflow setup](workflow-examples/README.md).
 
 #### Git submodule
 

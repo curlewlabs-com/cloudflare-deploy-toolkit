@@ -104,8 +104,7 @@ jobs:
         with:
           fetch-depth: 0
           set-safe-directory: false
-          # CONSUMER: keep for a submodule install. For an archive, run the
-          # README setup with the pin from this checkout.
+          # CONSUMER: keep if your check script needs submodules.
           submodules: true
 
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
@@ -152,8 +151,7 @@ jobs:
           # this checkout, causing change detection to evaluate the wrong
           # commit. Pin to the SHA that actually passed CI.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          # CONSUMER: keep for a submodule install of the toolkit; drop for a
-          # vendored copy.
+          # CONSUMER: keep for a submodule install of the toolkit.
           submodules: true
           set-safe-directory: false
           fetch-depth: 0
@@ -276,6 +274,9 @@ jobs:
             echo "$CHANGED"
           fi
 
+      # CONSUMER: for an archive install, add the README setup here with the
+      # same skip condition as the next step. Read the pin from this checkout
+      # so the wrapper and verifier use the same toolkit in this job.
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         if: steps.changes.outputs.skip != 'true'
         with:

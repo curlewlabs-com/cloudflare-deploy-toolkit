@@ -15,8 +15,10 @@ From the repository root, run the same entry point as CI.
 Put Bats, Python 3.14, `jq`, a current `bash`, and GNU grep as `ggrep` on
 `PATH`. On macOS, install `bats-core`, `python@3.14`, `jq`, `bash`, and `grep`
 with Homebrew. Put Homebrew's Bash first on `PATH`. The system Bash can continue
-past a failed `[[ ]]` assertion, which makes the test result unreliable. On
-Linux, expose the system GNU grep as `ggrep` if that name is absent.
+past a failed `[[ ]]` assertion, which makes the test result unreliable. Prepend
+`$(brew --prefix python@3.14)/libexec/bin` to `PATH` so gate subprocesses with
+`#!/usr/bin/env python3` use Python 3.14. On Linux, expose the system GNU grep
+as `ggrep` if that name is absent.
 
 ## Test layers
 

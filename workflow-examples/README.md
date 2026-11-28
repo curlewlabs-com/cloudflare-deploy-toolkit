@@ -106,9 +106,11 @@ Specifically:
    from the checked-out revision alongside its wrapper. A `workflow_run`
    job can check out an earlier revision than the one providing the workflow
    YAML, so keeping the pin with the wrapper couples their versions. Run the
-   archive setup in a separate step, which writes `DEPLOY_TOOLKIT_DIR` to
-   `GITHUB_ENV` after successful verification and extraction. Both the wrapper
-   and `Verify deployment` use that path.
+   archive setup in a separate step in `deploy` after change detection, with
+   the same skip condition as the subsequent setup steps.
+   The setup writes `DEPLOY_TOOLKIT_DIR` to `GITHUB_ENV` after successful
+   verification and extraction. Both the wrapper and `Verify deployment` use
+   that path.
 
    The example verifies the deployment timestamp. If your Worker echoes its
    build SHA, also export `VERIFY_DEPLOYMENT_EXPECTED_SHA` (the commit you
