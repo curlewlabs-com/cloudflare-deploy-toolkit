@@ -73,7 +73,7 @@ line_of() {
   refute_step_called versions_view
   [[ "$output" != *"Verify the uploaded version's runtime"* ]]
   : > "$CALLS_LOG"
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1
+  run_wrapper
   [ "$status" -eq 0 ]
   refute_step_called versions_view
 }
@@ -114,7 +114,7 @@ line_of() {
 # A successful runtime read does not guarantee the deploy endpoint can see the
 # same version yet. Both bodies must finish without entering recovery.
 @test "windowless final promotion waits for the uploaded version after runtime verification" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
+  run_wrapper "DEPLOY_EXPECTED_RUNTIME=$MATCHING_RUNTIME" \
     DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found
   [ "$status" -eq 0 ]
   [[ "$output" == *"promote_final: succeeded on attempt 2/2"* ]]
@@ -122,7 +122,7 @@ line_of() {
 }
 
 @test "a silent failed promotion keeps its rollback obligation" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 WRANGLER_LOG=none \
+  run_wrapper WRANGLER_LOG=none \
     DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -130,7 +130,7 @@ line_of() {
 }
 
 @test "windowless retry leaves an intervening deployment serving" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_superseded
   [ "$status" -ne 0 ]
   [[ "$output" == *"Serving set changed mid-deploy"* ]]
@@ -139,7 +139,7 @@ line_of() {
 }
 
 @test "windowless retry leaves an intervening split serving" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_superseded MOCK_SERVING_AFTER_PROMOTE=split
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -147,7 +147,7 @@ line_of() {
 }
 
 @test "a missing-version code in an annotation preserves recovery after traffic changes" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:post_promote_error
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -155,7 +155,7 @@ line_of() {
 }
 
 @test "a missing-version error from submission keeps rollback armed" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
+  run_wrapper DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 \
     MOCK_TRANSIENT_FAIL_AT=promote_final:1:submission_not_found
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -163,7 +163,7 @@ line_of() {
 }
 
 @test "an unreadable windowless recheck after a rejected promotion does not overwrite traffic" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 \
+  run_wrapper \
     DEPLOY_WRANGLER_RETRY_BACKOFF_SECONDS=0 MOCK_TRANSIENT_FAIL_AT=promote_final:1:version_not_found_unreadable
   [ "$status" -ne 0 ]
   [ "$(grep -c '^promote_final ' "$CALLS_LOG")" -eq 1 ]
@@ -180,7 +180,7 @@ line_of() {
 }
 
 @test "expected_runtime_differs_windowless: the final upload is refused before the promote" {
-  run_wrapper DEPLOY_PIPELINE_MODE=windowless-v1 \
+  run_wrapper \
     'DEPLOY_EXPECTED_RUNTIME={"compatibility_date": "2026-04-21", "compatibility_flags": []}'
   [ "$status" -ne 0 ]
   [[ "$output" == *"RUNTIME MISMATCH"* ]]

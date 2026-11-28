@@ -94,8 +94,8 @@ Specifically:
 
 8. **Deploy script** - `<PROJECT>/scripts/deploy-safe.sh` is your safe-deploy
    wrapper, ~30 lines of boilerplate plus a few lines per hook. It exports
-   `DEPLOY_PIPELINE_MODE=windowless-v1` and `DEPLOY_WRANGLER_ENV_*` plus
-   `WINDOWLESS_PREFLIGHT_CMD` / `MIGRATE_CMD` / `POSTFLIGHT_CMD`, and runs
+   `DEPLOY_WRANGLER_ENV_*` plus `PREFLIGHT_CMD` / `MIGRATE_CMD` /
+   `POSTFLIGHT_CMD`, and runs
    `safe_deploy_pipeline.py "$@"`. See
    [`../deploy-lib/README.md`](../deploy-lib/README.md) for the full API and an
    inlined wrapper example.

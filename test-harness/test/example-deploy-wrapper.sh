@@ -36,8 +36,7 @@ export DEPLOY_WRANGLER_ENV_PRODUCTION="production"
 # Hook commands receive the environment; preflight also receives the version ID.
 # Defaulted rather than assigned so a test driver can substitute a builtin -
 # `true` for a no-op, `false` to inject a failure - without editing the wrapper.
-export DEPLOY_PIPELINE_MODE="${DEPLOY_PIPELINE_MODE-windowless-v1}"
-export WINDOWLESS_PREFLIGHT_CMD="${WINDOWLESS_PREFLIGHT_CMD:-$SCRIPT_DIR/example-hook.sh preflight}"
+export PREFLIGHT_CMD="${PREFLIGHT_CMD:-$SCRIPT_DIR/example-hook.sh preflight}"
 export MIGRATE_CMD="${MIGRATE_CMD:-$SCRIPT_DIR/example-hook.sh migrate}"
 export POSTFLIGHT_CMD="${POSTFLIGHT_CMD:-$SCRIPT_DIR/example-hook.sh postflight}"
 

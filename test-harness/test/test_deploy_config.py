@@ -20,8 +20,7 @@ import deploy_config
 # The smallest environment that describes a deploy. Cases start from this and
 # remove or replace one entry, so what each one is about is the diff.
 COMPLETE = {
-    "DEPLOY_PIPELINE_MODE": "windowless-v1",
-    "WINDOWLESS_PREFLIGHT_CMD": "true",
+    "PREFLIGHT_CMD": "true",
     "DEPLOY_WRANGLER_ENV_STAGING": "staging",
     "MIGRATE_CMD": "true",
 }
@@ -132,16 +131,6 @@ class StartupRefusals(unittest.TestCase):
             )
         self.assertIn("MIGRATE_CMD", str(refusal.exception))
 
-    def test_an_unrecognized_mode_refuses_rather_than_choosing_one(self) -> None:
-        with self.assertRaises(deploy_config.ConfigError) as refusal:
-            staging(DEPLOY_PIPELINE_MODE="windowlss")
-        self.assertIn("unrecognized DEPLOY_PIPELINE_MODE", str(refusal.exception))
-
-    def test_retired_modes_refuse_before_deployment(self) -> None:
-        for mode in ("windowless", "windowed", "relocation"):
-            with self.subTest(mode=mode), self.assertRaises(deploy_config.ConfigError):
-                staging(DEPLOY_PIPELINE_MODE=mode)
-
     def test_config_for_the_other_environment_does_not_stand_in(self) -> None:
         # A production deploy reading the staging Worker environment is the failure
         # this refusal exists for.
@@ -174,21 +163,23 @@ class StartupRefusals(unittest.TestCase):
         config = staging(MIGRATE_CMD="'/opt/my tools/migrate.sh' --strict")
         self.assertEqual(config.migrate_cmd, ("/opt/my tools/migrate.sh", "--strict"))
 
-    def test_upgrading_requires_a_new_preflight_and_explicit_mode(self) -> None:
-        for key in ("DEPLOY_PIPELINE_MODE", "WINDOWLESS_PREFLIGHT_CMD"):
-            for empty in (None, ""):
-                environ = dict(COMPLETE, PREFLIGHT_CMD="true")
-                if empty is None:
-                    del environ[key]
-                else:
-                    environ[key] = empty
-                with (
-                    self.subTest(key=key, empty=empty),
-                    self.assertRaises(deploy_config.ConfigError),
-                ):
-                    deploy_config.resolve(
-                        deploy_config.Invocation("staging", "abcdef0"), environ
-                    )
+    def test_a_missing_or_empty_preflight_refuses(self) -> None:
+        # Preflight is the consumer's check that the live database can take
+        # this deploy; a run without it would mutate unchecked.
+        for empty in (None, ""):
+            environ = dict(COMPLETE)
+            if empty is None:
+                del environ["PREFLIGHT_CMD"]
+            else:
+                environ["PREFLIGHT_CMD"] = empty
+            with (
+                self.subTest(empty=empty),
+                self.assertRaises(deploy_config.ConfigError) as refusal,
+            ):
+                deploy_config.resolve(
+                    deploy_config.Invocation("staging", "abcdef0"), environ
+                )
+            self.assertIn("PREFLIGHT_CMD", str(refusal.exception))
 
     def test_empty_postflight_skips_the_optional_hook(self) -> None:
         self.assertIsNone(staging(POSTFLIGHT_CMD="  ").postflight_cmd)
