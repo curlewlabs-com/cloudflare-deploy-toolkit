@@ -71,7 +71,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SERVICE_DIR/../.." && pwd)"
-export DEPLOY_TOOLKIT_DIR="$REPO_ROOT/vendor/cloudflare-deploy-toolkit"
+export DEPLOY_TOOLKIT_DIR="${DEPLOY_TOOLKIT_DIR:-$REPO_ROOT/vendor/cloudflare-deploy-toolkit}"
 
 # === required config (exported: a subprocess reads its environment) ===
 export DEPLOY_WRANGLER_ENV_STAGING="staging"
@@ -94,8 +94,10 @@ exec python3.14 "$DEPLOY_TOOLKIT_DIR/deploy-lib/safe_deploy_pipeline.py" "$@"
 The properties of that wrapper are worth naming, and each follows from the
 pipeline being a program rather than a library:
 
-- **Config is exported.** A subprocess reads its environment; a shell variable
-  the wrapper merely assigned is invisible to it.
+- **Config is exported.** A subprocess reads the wrapper's environment. For a
+  release archive, set the absolute `DEPLOY_TOOLKIT_DIR` in the CI job so it
+  reaches both the wrapper and the separate verification step. See the
+  [workflow setup](../workflow-examples/README.md).
 - **Hooks are commands.** The pipeline appends the environment and, for preflight,
   the captured version ID. A command may carry its own leading arguments (the example
   above passes `--require-schema` before the env). The strings are split with
@@ -213,31 +215,14 @@ a deploy that ignored it.
   scoped to the wrangler process - the pipeline never exports `CI`, so consumer
   hooks keep the caller's own `$CI`.
 
-## Testing the consumer wrapper
+## Pipeline tests
 
-The toolkit's test harness drives a consumer's wrapper end-to-end with no real
-wrangler. The pattern is to write a `.bats` driver that:
-
-1. Sets `WRANGLER=$HARNESS_DIR/bin/mock-wrangler.sh` (the mock binary that
-   classifies wrangler calls and replays committed fixtures).
-2. Sets `PREFLIGHT_CMD=true`, `MIGRATE_CMD=true` and `POSTFLIGHT_CMD=true` so the test doesn't need a
-   real D1 connection or a real consumer migrate hook. The real wrapper should
-   still wire postflight in strict mode (for example
-   `check-schema-live.sh "$1" --require-schema`) so an empty DB under a
-   required-schema check fails closed outside the test override path.
-3. Has one `@test` per `MOCK_FAIL_AT=<step>` failure point, asserting on the
-   mock's call log to verify the recovery layers fire at the right points.
-
-See [`../test-harness/README.md`](../test-harness/README.md) for the
-mock-wrangler step names, the slot UUID convention, and the full onboarding
-walkthrough.
-
-The pipeline has no per-step unit tests: the mock-driven end-to-end suite
-exercises every step in context, and per-step unit tests would be an upside-down
-test pyramid. What does get a suite of its own is a decision the end-to-end run
-cannot reach - a document shape wrangler never sends in a test, a value the
-operator supplies - which is what the `test_*.py` files beside the bats drivers
-cover.
+The repository tests deployment order and recovery through an
+[example suite](../test-harness/test/test-deploy-pipeline-smoke.bats) and the
+[Wrangler double](../test-harness/bin/mock-wrangler.sh). The double defines the
+step names used for failure injection. Python suites cover decisions that need
+inputs the end-to-end flow does not produce. See the
+[contributor test guide](../test-harness/README.md) to run the suites.
 
 ## Dependencies
 

@@ -12,8 +12,9 @@
 #      with the file/directory globs that should trigger a deploy.
 #   4. Replace the SCRIPT_NAME values in the verify step with your
 #      production / staging Worker script names.
-#   5. Point the verify helper at your vendored or submodule toolkit checkout,
-#      or replace it with the path to your copied verify helper.
+#   5. Provision the toolkit in the deploy job. Enable submodule checkout for
+#      the default path, or extract the pinned archive and set job-level
+#      DEPLOY_TOOLKIT_DIR to its absolute directory. See the workflow guide.
 #   6. If your Worker doesn't use D1, drop the D1-related steps in
 #      `scripts/deploy-safe.sh` (your equivalent script).
 #   7. If your project uses a different package manager, replace bun with
@@ -408,9 +409,9 @@ jobs:
             SCRIPT_NAME="<WORKER>-api-staging"
           fi
 
-          # CONSUMER: default assumes the toolkit is vendored at
-          # vendor/cloudflare-deploy-toolkit. Override DEPLOY_TOOLKIT_DIR or
-          # replace this with the path to your copied verify helper.
+          # CONSUMER: the default is the submodule path. For an archive,
+          # set DEPLOY_TOOLKIT_DIR in the job so this step and the wrapper
+          # receive the same absolute path.
           TOOLKIT_DIR="${DEPLOY_TOOLKIT_DIR:-vendor/cloudflare-deploy-toolkit}"
           export SCRIPT_NAME
           "$TOOLKIT_DIR/bin/verify_deployment.py"

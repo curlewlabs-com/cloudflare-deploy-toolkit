@@ -239,8 +239,8 @@ def _verify_live_sha(
     for attempt in range(1, attempts + 1):
         last_body = _fetch_live_sha_body(env, url, header)
         live_sha = _extract_sha(last_body, sha_filter)
-        # Match the full jq output so one matching line in a multi-value
-        # response cannot pass the live check for a different build.
+        # Compare the newline-trimmed jq output as a whole to avoid accepting
+        # a matching substring from a different build.
         if live_sha == expected_sha:
             print(
                 f"Live {script_name} is serving expected SHA {expected_sha}"

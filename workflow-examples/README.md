@@ -88,9 +88,7 @@ Specifically:
    `oven-sh/setup-bun@v2` action and `bunx` invocations all assume bun.
 
 7. **Pre-deploy checks** - `<PROJECT>/scripts/check.sh` is your check pipeline.
-   A complete example runs lint + types + unit tests + the harness self-tests +
-   any project-specific checks (query plans, schema lint, etc). Yours can be
-   shorter to start.
+   Run your project's lint, type checks, and tests before a manual deploy.
 
 8. **Deploy script** - `<PROJECT>/scripts/deploy-safe.sh` is your safe-deploy
    wrapper, ~30 lines of boilerplate plus a few lines per hook. It exports
@@ -100,15 +98,18 @@ Specifically:
    [`../deploy-lib/README.md`](../deploy-lib/README.md) for the full API and an
    inlined wrapper example.
 
-9. **Verify helper** - the example defaults `TOOLKIT_DIR` to
-   `vendor/cloudflare-deploy-toolkit`, matching the toolkit's submodule/vendor
-   install docs. If you copied `bin/verify_deployment.py` somewhere else, update
-   that line (or call your copied helper directly) so the timestamp parsing and
-   skew rules stay identical between the example and real consumers. The example
-   runs the timestamp check only; if your Worker exposes an endpoint that echoes
-   its build SHA, also export `VERIFY_DEPLOYMENT_EXPECTED_SHA` (the commit you
-   deployed) and `VERIFY_DEPLOYMENT_SHA_URL` so the helper additionally asserts
-   that build is live. Optional knobs: `VERIFY_DEPLOYMENT_SHA_HEADER` (a request
+9. **Toolkit location and verification** - make the toolkit available in the
+   deploy job before running the wrapper. For the default submodule location,
+   `vendor/cloudflare-deploy-toolkit`, enable submodule checkout. For a
+   [release archive](../README.md#release-archive), verify and extract it in
+   the job, then set job-level `DEPLOY_TOOLKIT_DIR` to its absolute directory
+   so both the wrapper and `Verify deployment` receive it. A variable exported
+   inside the wrapper is scoped to that process and its children.
+
+   The example verifies the deployment timestamp. If your Worker echoes its
+   build SHA, also export `VERIFY_DEPLOYMENT_EXPECTED_SHA` (the commit you
+   deployed) and `VERIFY_DEPLOYMENT_SHA_URL` to verify that build is live.
+   Optional settings include `VERIFY_DEPLOYMENT_SHA_HEADER` (a request
    header needed to reach the URL, e.g. a WAF gate header),
    `VERIFY_DEPLOYMENT_SHA_JQ` (the jq filter for the SHA field, default `.sha`),
    and `VERIFY_DEPLOYMENT_SHA_ATTEMPTS` /

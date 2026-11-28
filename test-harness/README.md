@@ -21,8 +21,10 @@ Linux, expose the system GNU grep as `ggrep` if that name is absent.
 ## Test layers
 
 - Bats drives the real pipeline through `test/example-deploy-wrapper.sh` and
-  [the Wrangler double](bin/mock-wrangler.sh). Its failure-injection settings
-  let the suites check what runs after a failed deploy step. See
+  [the Wrangler double](bin/mock-wrangler.sh). The
+  [example suite setup](test/test-deploy-pipeline-smoke.bats) points
+  `FIXTURE_DIR` at its fixtures. Failure injection lets the suites check what
+  runs after a failed deploy step. See
   [the pipeline guide](../deploy-lib/README.md) for the expected recovery.
 - Python's `unittest` covers the pipeline's individual decisions and the
   gates under [`../bin/`](../bin/). Run the relevant `test/test_*.py` file with
@@ -34,12 +36,15 @@ Linux, expose the system GNU grep as `ggrep` if that name is absent.
 
 Start from `test/example-fixtures/` when adding a pipeline case. Re-capture
 only when a new test needs a response or Wrangler changes its output. Use
-[the capture helpers](lib/capture-helpers.sh) for dry-run or read-only calls and
-[the sanitizer](bin/sanitize-wrangler-text.sh) to scrub environment values.
+[the capture helpers](lib/capture-helpers.sh) for dry-run or read-only calls.
+When capturing real output, use [the sanitizer](bin/sanitize-wrangler-text.sh)
+with `--scrub-binding NAME` for each binding that carries a sensitive value.
 The fixture UUIDs in [test-slots.sh](lib/test-slots.sh) make the older, serving,
 and newly uploaded versions distinguishable in a call log.
 
 Review fixture diffs for operational data before committing, then run
 [the fixture purity scanner](bin/check-fixture-purity.sh) on the changed fixture
-set. If an upload's `Worker Version ID:` prefix or the deployments JSON shape
-changes, check the production parser before updating the fixture.
+set. Pass a local forbidden-literals file as its second argument, with each
+project-specific sensitive value on its own line. Keep that file outside the
+checkout. If an upload's `Worker Version ID:` prefix or the deployments JSON
+shape changes, check the production parser before updating the fixture.

@@ -72,7 +72,10 @@ curl -fsSLo toolkit.tar.gz "$URL" &&
   tar -xzf toolkit.tar.gz -C vendor
 ```
 
-Set your wrapper's `DEPLOY_TOOLKIT_DIR` to the extracted directory.
+In CI, extract the archive before deploying. Set the job's
+`DEPLOY_TOOLKIT_DIR` to the absolute path of the extracted directory so the
+wrapper and the verification step can both find it. See the
+[workflow setup](workflow-examples/README.md).
 
 #### Git submodule
 
@@ -90,7 +93,7 @@ Then in your wrapper script:
 
 ```sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-export DEPLOY_TOOLKIT_DIR="$SCRIPT_DIR/../vendor/cloudflare-deploy-toolkit"
+export DEPLOY_TOOLKIT_DIR="${DEPLOY_TOOLKIT_DIR:-$SCRIPT_DIR/../vendor/cloudflare-deploy-toolkit}"
 exec python3.14 "$DEPLOY_TOOLKIT_DIR/deploy-lib/safe_deploy_pipeline.py" "$@"
 ```
 
